@@ -8,6 +8,8 @@ license = { text = "MIT" }
 authors = [{ name = "Frédéric Montet" }]
 dependencies = [
     "pillow>=9.0",
+    "paho-mqtt>=2.0",
+    "prometheus-client>=0.19",
 ]
 
 [project.optional-dependencies]

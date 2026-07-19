@@ -13,13 +13,15 @@ TAP_DEBOUNCE = 0.5
 
 
 class App:
-    def __init__(self, sensors, display, renderer: Renderer, refresh: float = 1.0, cycle: float = 10.0):
+    def __init__(self, sensors, display, renderer: Renderer, refresh: float = 1.0, cycle: float = 10.0,
+                 publishers=()):
         """cycle=0 disables auto page cycling (tap the proximity sensor to switch)."""
         self.sensors = sensors
         self.display = display
         self.renderer = renderer
         self.refresh = refresh
         self.cycle = cycle
+        self.publishers = list(publishers)
 
     def run(self) -> None:
         page = 0
@@ -40,6 +42,7 @@ class App:
                     last_refresh = now
                     dirty = True
                     self._log_readings(readings)
+                    self._publish(readings)
 
                 prox = self.sensors.proximity()
                 if prox is not None and prox > TAP_THRESHOLD and now - last_tap > TAP_DEBOUNCE:
@@ -61,15 +64,31 @@ class App:
         except KeyboardInterrupt:
             log.info("Exiting")
         finally:
-            self.display.close()
+            self._close()
 
     def render_all_pages(self) -> None:
         """Render every page once with a single snapshot, then return."""
         readings = self.sensors.read()
         self._log_readings(readings)
+        self._publish(readings)
         for i in range(len(self.renderer.pages)):
             self.display.show(self.renderer.render(i, readings))
+        self._close()
+
+    def _publish(self, readings: Readings) -> None:
+        for publisher in self.publishers:
+            try:
+                publisher.publish(readings)
+            except Exception:
+                log.warning("%s failed", type(publisher).__name__, exc_info=True)
+
+    def _close(self) -> None:
         self.display.close()
+        for publisher in self.publishers:
+            try:
+                publisher.close()
+            except Exception:
+                pass
 
     @staticmethod
     def _log_readings(r: Readings) -> None:
