@@ -40,13 +40,15 @@ cd pluto
 ```
 
 The script enables I2C/SPI, adds the `adau7002-simple` overlay for the
-microphone (reboot once afterwards for the mic to appear), creates a
-virtualenv in `.venv` and installs the dependencies.
+microphone (reboot once afterwards for the mic to appear), installs
+[uv](https://docs.astral.sh/uv/) if needed, and installs the
+dependencies with `uv sync --extra hardware` (the `hardware` extra
+holds the Enviro+ drivers, which only make sense on the Pi).
 
 Run it:
 
 ```bash
-.venv/bin/python -m pluto
+uv run pluto
 ```
 
 ### Run on boot
@@ -63,8 +65,8 @@ sudo systemctl enable --now pluto
 ## Options
 
 ```
-python -m pluto [--refresh SECONDS] [--cycle SECONDS] [--no-pms] [--no-noise]
-                [--mock] [--once] [--frames-dir DIR] [-v]
+pluto [--refresh SECONDS] [--cycle SECONDS] [--no-pms] [--no-noise]
+      [--mock] [--once] [--frames-dir DIR] [-v]
 ```
 
 - `--refresh` — seconds between sensor reads (default 1)
@@ -74,12 +76,13 @@ python -m pluto [--refresh SECONDS] [--cycle SECONDS] [--no-pms] [--no-noise]
 
 ## Developing off the Pi
 
-Only Pillow is required for mock mode:
+Mock mode needs no hardware drivers, so a plain `uv sync` (without the
+`hardware` extra) is enough:
 
 ```bash
-python3 -m venv .venv && .venv/bin/pip install pillow
-.venv/bin/python -m pluto --mock --once --frames-dir frames  # writes one PNG per page
-.venv/bin/python -m pluto --mock -v                          # run the full loop
+uv sync
+uv run pluto --mock --once --frames-dir frames  # writes one PNG per page
+uv run pluto --mock -v                          # run the full loop
 ```
 
 ## Project layout

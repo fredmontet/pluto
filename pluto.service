@@ -6,7 +6,7 @@ After=multi-user.target
 Type=simple
 User=pi
 WorkingDirectory=/home/pi/pluto
-ExecStart=/home/pi/pluto/.venv/bin/python -m pluto
+ExecStart=/home/pi/pluto/.venv/bin/pluto
 Restart=on-failure
 RestartSec=5
 

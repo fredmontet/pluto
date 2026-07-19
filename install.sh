@@ -17,14 +17,18 @@ if ! grep -q "adau7002-simple" "$CONFIG"; then
     echo "    (a reboot is needed for the microphone to appear)"
 fi
 
-echo "==> Creating virtualenv and installing dependencies"
-python3 -m venv --system-site-packages .venv
-.venv/bin/pip install --upgrade pip
-.venv/bin/pip install -r requirements.txt
+if ! command -v uv >/dev/null 2>&1; then
+    echo "==> Installing uv"
+    curl -LsSf https://astral.sh/uv/install.sh | sh
+    export PATH="$HOME/.local/bin:$PATH"
+fi
+
+echo "==> Installing dependencies with uv"
+uv sync --extra hardware
 
 echo
 echo "Done. Try it with:"
-echo "  .venv/bin/python -m pluto"
+echo "  uv run pluto"
 echo
 echo "To run on boot:"
 echo "  sudo cp pluto.service /etc/systemd/system/"

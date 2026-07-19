@@ -1,0 +1,28 @@
+[project]
+name = "pluto"
+version = "0.1.0"
+description = "Sensor dashboard for the Pimoroni Enviro+ on a Raspberry Pi Zero 2 W"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+authors = [{ name = "Frédéric Montet" }]
+dependencies = [
+    "pillow>=9.0",
+]
+
+[project.optional-dependencies]
+# The Enviro+ drivers only make sense on the Pi itself; off-device
+# development (pluto --mock) needs nothing beyond the base dependencies.
+hardware = [
+    "enviroplus>=1.0.1",
+]
+
+[project.scripts]
+pluto = "pluto.__main__:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["pluto"]
