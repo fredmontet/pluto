@@ -1,0 +1,14 @@
+[Unit]
+Description=Pluto - Enviro+ sensor display
+After=multi-user.target
+
+[Service]
+Type=simple
+User=pi
+WorkingDirectory=/home/pi/pluto
+ExecStart=/home/pi/pluto/.venv/bin/pluto
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
