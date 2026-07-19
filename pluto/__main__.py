@@ -2,6 +2,7 @@
 
 import argparse
 import logging
+import os
 import sys
 
 from .app import App
@@ -28,6 +29,23 @@ def main() -> int:
     parser.add_argument("--frames-dir", metavar="DIR",
                         help="with --mock, save rendered frames as PNGs into DIR")
     parser.add_argument("-v", "--verbose", action="store_true", help="debug logging")
+
+    pub = parser.add_argument_group("publishing")
+    pub.add_argument("--mqtt", metavar="HOST",
+                     help="publish readings as JSON to this MQTT broker")
+    pub.add_argument("--mqtt-port", type=int, default=1883, metavar="PORT",
+                     help="MQTT broker port (default: 1883)")
+    pub.add_argument("--mqtt-topic", metavar="TOPIC",
+                     help="base MQTT topic (default: pluto/<hostname>)")
+    pub.add_argument("--mqtt-user", metavar="USER", help="MQTT username")
+    pub.add_argument("--mqtt-password", metavar="PASS",
+                     default=os.environ.get("PLUTO_MQTT_PASSWORD"),
+                     help="MQTT password (or set PLUTO_MQTT_PASSWORD)")
+    pub.add_argument("--ha-discovery", action="store_true",
+                     help="announce the sensors to Home Assistant via MQTT discovery")
+    pub.add_argument("--prometheus", type=int, metavar="PORT",
+                     help="expose Prometheus metrics on this port at /metrics")
+
     args = parser.parse_args()
 
     logging.basicConfig(
@@ -59,11 +77,31 @@ def main() -> int:
             )
             return 1
 
+    publishers = []
+    if args.mqtt:
+        from .publish import MQTTPublisher
+
+        publishers.append(MQTTPublisher(
+            host=args.mqtt,
+            port=args.mqtt_port,
+            base_topic=args.mqtt_topic,
+            username=args.mqtt_user,
+            password=args.mqtt_password,
+            ha_discovery=args.ha_discovery,
+            has_particulates=sensors.has_particulates,
+            has_noise=sensors.has_noise,
+        ))
+    if args.prometheus:
+        from .publish import PrometheusExporter
+
+        publishers.append(PrometheusExporter(port=args.prometheus))
+
     renderer = Renderer(
         has_particulates=sensors.has_particulates,
         has_noise=sensors.has_noise,
     )
-    app = App(sensors, display, renderer, refresh=args.refresh, cycle=args.cycle)
+    app = App(sensors, display, renderer, refresh=args.refresh, cycle=args.cycle,
+              publishers=publishers)
 
     if args.once:
         app.render_all_pages()

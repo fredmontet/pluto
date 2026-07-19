@@ -67,12 +67,51 @@ sudo systemctl enable --now pluto
 ```
 pluto [--refresh SECONDS] [--cycle SECONDS] [--no-pms] [--no-noise]
       [--mock] [--once] [--frames-dir DIR] [-v]
+      [--mqtt HOST] [--mqtt-port PORT] [--mqtt-topic TOPIC]
+      [--mqtt-user USER] [--mqtt-password PASS] [--ha-discovery]
+      [--prometheus PORT]
 ```
 
 - `--refresh` — seconds between sensor reads (default 1)
 - `--cycle` — seconds between automatic page changes, `0` to disable (default 10)
 - `--no-pms` / `--no-noise` — skip the particulate sensor / microphone
 - `--once` — render each page once and exit (smoke test)
+
+## Publishing readings
+
+Besides the LCD, readings can be sent off the Pi. Both options can run
+at the same time and don't interfere with the display.
+
+### MQTT
+
+```bash
+uv run pluto --mqtt broker.local --ha-discovery
+```
+
+Each refresh publishes a JSON snapshot to `pluto/<hostname>/readings`
+(override with `--mqtt-topic`), with a retained `online`/`offline`
+status on `pluto/<hostname>/status` backed by a last-will. Missing
+sensors are omitted from the payload rather than sent as `null`.
+
+With `--ha-discovery`, the device announces every sensor via [Home
+Assistant MQTT discovery](https://www.home-assistant.io/integrations/mqtt/#mqtt-discovery),
+so it appears in Home Assistant automatically as an "Enviro+" device
+with proper units and availability — no YAML needed.
+
+Use `--mqtt-user` and `--mqtt-password` for an authenticated broker
+(the password can also come from the `PLUTO_MQTT_PASSWORD` environment
+variable, handy in the systemd unit).
+
+### Prometheus
+
+```bash
+uv run pluto --prometheus 9099
+```
+
+Exposes the latest snapshot at `http://<pi>:9099/metrics` as gauges
+(`pluto_temperature_celsius`, `pluto_humidity_percent`,
+`pluto_particulates_ug_per_m3{size="2.5"}`, …) for a Prometheus server
+to scrape. Sensors that are missing report `NaN`.
 
 ## Developing off the Pi
 
