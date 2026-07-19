@@ -1,0 +1,6 @@
+# On the Raspberry Pi. The enviroplus package pulls in the drivers for every
+# onboard sensor (bme280, ltr559, ads1015/gas, pms5003, st7735, mic).
+enviroplus>=1.0.1
+pillow>=9.0
+
+# For development off the Pi (python -m pluto --mock), only pillow is needed.
