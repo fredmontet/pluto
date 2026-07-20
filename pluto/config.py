@@ -59,27 +59,32 @@ class DisplayConfig:
 
 
 @dataclass
-class MQTTConfig:
-    enabled: bool = False
-    host: str = ""
-    port: int = 1883
-    topic: str = ""  # empty -> pluto/<device id>
-    username: str = ""
-    password: str = ""
-    ha_discovery: bool = False
+class SinkConfig:
+    """One ``[outputs.<sink>]`` table: an enabled flag plus whatever
+    sink-specific settings the table carries. Settings are validated
+    by the sink itself when it is instantiated."""
 
-
-@dataclass
-class PrometheusConfig:
-    enabled: bool = False
-    port: int = 9099
+    enabled: bool = True
+    settings: Dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
 class OutputsConfig:
     display: DisplayConfig = field(default_factory=DisplayConfig)
-    mqtt: MQTTConfig = field(default_factory=MQTTConfig)
-    prometheus: PrometheusConfig = field(default_factory=PrometheusConfig)
+    sinks: Dict[str, SinkConfig] = field(default_factory=dict)
+
+    def sink(self, name: str) -> SinkConfig:
+        """The config for ``name``, creating a default entry if absent."""
+        return self.sinks.setdefault(name, SinkConfig())
+
+
+@dataclass
+class BufferConfig:
+    """Store-and-forward queue for network sinks (mqtt, http)."""
+
+    enabled: bool = True
+    path: str = "pluto-buffer.db"
+    max_snapshots: int = 10000  # per sink; oldest dropped beyond this
 
 
 @dataclass
@@ -87,6 +92,7 @@ class Config:
     device: DeviceConfig = field(default_factory=DeviceConfig)
     sensors: SensorsConfig = field(default_factory=SensorsConfig)
     outputs: OutputsConfig = field(default_factory=OutputsConfig)
+    buffer: BufferConfig = field(default_factory=BufferConfig)
 
 
 def load_config(path: Optional[str] = None) -> Config:
@@ -111,7 +117,7 @@ def load_config(path: Optional[str] = None) -> Config:
 
 def parse_config(data: Dict[str, Any]) -> Config:
     """Validate a parsed TOML document and build a Config from it."""
-    _check_keys(data, ("device", "sensors", "outputs"), "top level")
+    _check_keys(data, ("device", "sensors", "outputs", "buffer"), "top level")
     cfg = Config()
 
     device = _table(data, "device")
@@ -138,7 +144,6 @@ def parse_config(data: Dict[str, Any]) -> Config:
         cfg.sensors.drivers[name] = DriverConfig(enabled=enabled, settings=settings)
 
     outputs = _table(data, "outputs")
-    _check_keys(outputs, ("display", "mqtt", "prometheus"), "[outputs]")
 
     display = _table(outputs, "display", "outputs")
     _check_keys(display, ("enabled", "cycle"), "[outputs.display]")
@@ -149,26 +154,30 @@ def parse_config(data: Dict[str, Any]) -> Config:
     if cfg.outputs.display.cycle < 0:
         raise ConfigError("outputs.display.cycle must be >= 0 (0 disables cycling)")
 
-    mqtt = _table(outputs, "mqtt", "outputs")
-    _check_keys(
-        mqtt,
-        ("enabled", "host", "port", "topic", "username", "password", "ha_discovery"),
-        "[outputs.mqtt]")
-    m = cfg.outputs.mqtt
-    m.enabled = _get(mqtt, "enabled", bool, m.enabled, "outputs.mqtt")
-    m.host = _get(mqtt, "host", str, m.host, "outputs.mqtt")
-    m.port = _port(_get(mqtt, "port", int, m.port, "outputs.mqtt"), "outputs.mqtt.port")
-    m.topic = _get(mqtt, "topic", str, m.topic, "outputs.mqtt")
-    m.username = _get(mqtt, "username", str, m.username, "outputs.mqtt")
-    m.password = _get(mqtt, "password", str, m.password, "outputs.mqtt")
-    m.ha_discovery = _get(mqtt, "ha_discovery", bool, m.ha_discovery, "outputs.mqtt")
+    # Every other key is a [outputs.<sink>] table. Sink names and their
+    # settings are validated when the sinks are loaded, so entry-point
+    # sinks unknown to this module still work.
+    for name, table in outputs.items():
+        if name == "display":
+            continue
+        if not isinstance(table, dict):
+            raise ConfigError(
+                f"[outputs.{name}] must be a table of sink settings, "
+                f"got {type(table).__name__}")
+        enabled = _get(table, "enabled", bool, True, f"outputs.{name}")
+        settings = {k: v for k, v in table.items() if k != "enabled"}
+        cfg.outputs.sinks[name] = SinkConfig(enabled=enabled, settings=settings)
 
-    prometheus = _table(outputs, "prometheus", "outputs")
-    _check_keys(prometheus, ("enabled", "port"), "[outputs.prometheus]")
-    p = cfg.outputs.prometheus
-    p.enabled = _get(prometheus, "enabled", bool, p.enabled, "outputs.prometheus")
-    p.port = _port(_get(prometheus, "port", int, p.port, "outputs.prometheus"),
-                   "outputs.prometheus.port")
+    buffer = _table(data, "buffer")
+    _check_keys(buffer, ("enabled", "path", "max_snapshots"), "[buffer]")
+    b = cfg.buffer
+    b.enabled = _get(buffer, "enabled", bool, b.enabled, "buffer")
+    b.path = _get(buffer, "path", str, b.path, "buffer")
+    if not b.path:
+        raise ConfigError("buffer.path must not be empty")
+    b.max_snapshots = _get(buffer, "max_snapshots", int, b.max_snapshots, "buffer")
+    if b.max_snapshots < 1:
+        raise ConfigError("buffer.max_snapshots must be >= 1")
 
     return cfg
 
@@ -191,28 +200,30 @@ def apply_cli_overrides(cfg: Config, args: Any) -> Config:
     if args.no_noise:
         cfg.sensors.driver("microphone").enabled = False
 
-    m = cfg.outputs.mqtt
     if args.mqtt:
+        m = cfg.outputs.sink("mqtt")
         m.enabled = True
-        m.host = args.mqtt
-    if args.mqtt_port is not None:
-        m.port = _port(args.mqtt_port, "--mqtt-port")
-    if args.mqtt_topic:
-        m.topic = args.mqtt_topic
-    if args.mqtt_user:
-        m.username = args.mqtt_user
-    if args.mqtt_password:  # CLI flag or PLUTO_MQTT_PASSWORD
-        m.password = args.mqtt_password
-    if args.ha_discovery:
-        m.ha_discovery = True
-    if m.enabled and not m.host:
-        raise ConfigError(
-            "MQTT is enabled but no broker host is set "
-            "(set outputs.mqtt.host or pass --mqtt HOST)")
+        m.settings["host"] = args.mqtt
+    if "mqtt" in cfg.outputs.sinks:
+        # The secondary --mqtt-* flags refine an mqtt sink that exists
+        # (declared in the file or created by --mqtt above); on their
+        # own they enable nothing, exactly like the old CLI.
+        settings = cfg.outputs.sinks["mqtt"].settings
+        if args.mqtt_port is not None:
+            settings["port"] = _port(args.mqtt_port, "--mqtt-port")
+        if args.mqtt_topic:
+            settings["topic"] = args.mqtt_topic
+        if args.mqtt_user:
+            settings["username"] = args.mqtt_user
+        if args.mqtt_password:  # CLI flag or PLUTO_MQTT_PASSWORD
+            settings["password"] = args.mqtt_password
+        if args.ha_discovery:
+            settings["ha_discovery"] = True
 
     if args.prometheus is not None:
-        cfg.outputs.prometheus.enabled = True
-        cfg.outputs.prometheus.port = _port(args.prometheus, "--prometheus")
+        p = cfg.outputs.sink("prometheus")
+        p.enabled = True
+        p.settings["port"] = _port(args.prometheus, "--prometheus")
 
     return cfg
 

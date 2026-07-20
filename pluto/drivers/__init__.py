@@ -8,11 +8,11 @@ discovered here and treated exactly like built-ins.
 """
 
 import logging
-from importlib.metadata import entry_points
 from typing import Dict, Iterable, List, Set, Type
 
 from ..config import ConfigError, SensorsConfig
-from .base import Driver, Quality, Reading, Readings, snapshot  # noqa: F401 (re-exported)
+from ..plugins import build_registry, entry_points_in
+from .base import Driver, Quality, Reading, Readings, flatten  # noqa: F401 (re-exported)
 
 log = logging.getLogger(__name__)
 
@@ -35,29 +35,11 @@ def builtin_drivers() -> Dict[str, Type[Driver]]:
 
 def registry() -> Dict[str, Type[Driver]]:
     """All known driver classes by name: built-ins plus entry points."""
-    reg = builtin_drivers()
-    for ep in _entry_points():
-        try:
-            cls = ep.load()
-        except Exception:
-            log.warning("Could not load sensor driver entry point %r", ep.name, exc_info=True)
-            continue
-        if not (isinstance(cls, type) and issubclass(cls, Driver)):
-            log.warning("Entry point %r is not a Driver subclass; ignoring", ep.name)
-            continue
-        name = cls.name or ep.name
-        if name in reg:
-            log.warning("Driver %r already registered; ignoring entry point %r", name, ep.name)
-            continue
-        reg[name] = cls
-    return reg
+    return build_registry(builtin_drivers(), _entry_points(), Driver, "driver")
 
 
 def _entry_points():
-    try:
-        return list(entry_points(group=ENTRY_POINT_GROUP))
-    except TypeError:  # Python 3.9: entry_points() takes no group argument
-        return list(entry_points().get(ENTRY_POINT_GROUP, []))
+    return entry_points_in(ENTRY_POINT_GROUP)
 
 
 def load_drivers(cfg: SensorsConfig, mock: bool = False) -> List[Driver]:

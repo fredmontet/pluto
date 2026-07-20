@@ -61,7 +61,11 @@ interval = 5.0        # seconds between mic samples; reading the mic
 
 
 # ── Outputs ─────────────────────────────────────────────────────────
-# One sub-table per sink. All of them can run at the same time.
+# One sub-table per sink. All of them can run at the same time, and a
+# failing sink never affects the others or the display. Unlike sensor
+# drivers, sinks only run when their table is declared here (or turned
+# on by a CLI flag) with enabled = true. Third-party sinks installed
+# via the `pluto.sinks` entry-point group are declared the same way.
 
 [outputs.display]
 enabled = true    # set to false to run headless (publish only, no LCD)
@@ -83,3 +87,31 @@ ha_discovery = false  # announce sensors via Home Assistant MQTT
 [outputs.prometheus]
 enabled = false   # expose /metrics for Prometheus (CLI: --prometheus PORT)
 port = 9099
+
+[outputs.sqlite]
+enabled = false   # append every snapshot to a local SQLite database
+path = "pluto-readings.db"
+max_rows = 100000 # prune the oldest rows beyond this many; 0 = keep all
+
+[outputs.csv]
+enabled = false   # one CSV file per day: <dir>/pluto-YYYY-MM-DD.csv
+dir = "csv"
+
+[outputs.http]
+enabled = false   # POST each snapshot as JSON
+url = ""          # required when enabled, e.g. "https://example.com/ingest"
+token = ""        # optional; sent as "Authorization: Bearer <token>"
+timeout = 10.0    # seconds per request
+
+
+# ── Buffering ───────────────────────────────────────────────────────
+# Store-and-forward queue for the network sinks (mqtt, http). While
+# the network is down, snapshots pile up in this SQLite file and are
+# replayed in order (with their original timestamps, retrying with
+# exponential backoff) once the connection returns — nothing is lost
+# across restarts or power cuts either.
+
+[buffer]
+enabled = true
+path = "pluto-buffer.db"
+max_snapshots = 10000  # per sink; beyond this the oldest are dropped

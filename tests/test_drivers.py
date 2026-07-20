@@ -10,7 +10,7 @@ from pluto.drivers import (
     read_all,
     registry,
 )
-from pluto.drivers.base import Driver, Quality, Reading, snapshot
+from pluto.drivers.base import Driver, Quality, Reading, flatten
 from pluto.drivers.microphone import MicrophoneDriver
 from pluto.drivers.mock import MockDriver
 
@@ -123,8 +123,8 @@ def test_read_all_survives_a_driver_that_raises():
     assert merged["temperature"].value is not None
 
 
-def test_snapshot_flattens_and_blanks_bad_readings():
-    snap = snapshot({
+def test_flatten_blanks_bad_readings():
+    snap = flatten({
         "temperature": Reading.ok(21.5, "°C"),
         "humidity": Reading.error("%"),
         "noise": Reading.missing(),

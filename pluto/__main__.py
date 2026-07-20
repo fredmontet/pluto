@@ -11,6 +11,7 @@ from .app import App
 from .config import ConfigError
 from .display import Renderer
 from .drivers import load_drivers, provided_fields
+from .sinks import SinkContext, load_sinks
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -69,6 +70,9 @@ def main(argv: Optional[List[str]] = None) -> int:
         cfg = config_module.load_config(args.config)
         cfg = config_module.apply_cli_overrides(cfg, args)
         drivers = load_drivers(cfg.sensors, mock=args.mock)
+        fields = provided_fields(drivers)
+        sinks = load_sinks(cfg.outputs, SinkContext(device=cfg.device, fields=fields),
+                           cfg.buffer)
     except ConfigError as e:
         log.error("Configuration error: %s", e)
         return 2
@@ -78,8 +82,6 @@ def main(argv: Optional[List[str]] = None) -> int:
                  f" at {cfg.device.location}" if cfg.device.location else "")
     if not drivers:
         log.warning("No sensor drivers available; every reading will show as --")
-
-    fields = provided_fields(drivers)
 
     if args.mock:
         from .display import ConsoleDisplay
@@ -104,33 +106,12 @@ def main(argv: Optional[List[str]] = None) -> int:
 
             display = NullDisplay()
 
-    publishers = []
-    if cfg.outputs.mqtt.enabled:
-        from .publish import MQTTPublisher
-
-        m = cfg.outputs.mqtt
-        publishers.append(MQTTPublisher(
-            host=m.host,
-            port=m.port,
-            base_topic=m.topic or None,
-            username=m.username or None,
-            password=m.password or None,
-            ha_discovery=m.ha_discovery,
-            fields=fields,
-            device_id=cfg.device.id or None,
-            location=cfg.device.location or None,
-        ))
-    if cfg.outputs.prometheus.enabled:
-        from .publish import PrometheusExporter
-
-        publishers.append(PrometheusExporter(port=cfg.outputs.prometheus.port))
-
     renderer = Renderer(
         has_particulates="pm25" in fields,
         has_noise="noise" in fields,
     )
     app = App(drivers, display, renderer, refresh=cfg.sensors.refresh,
-              cycle=cfg.outputs.display.cycle, publishers=publishers)
+              cycle=cfg.outputs.display.cycle, sinks=sinks)
 
     if args.once:
         app.render_all_pages()

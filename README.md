@@ -76,7 +76,7 @@ uv run pluto
 ```
 
 [`pluto.example.toml`](pluto.example.toml) documents every option with
-its default. The file has three sections:
+its default:
 
 ```toml
 [device]                  # identity of this Pi
@@ -105,6 +105,13 @@ ha_discovery = true       # port, topic, username, password also available
 [outputs.prometheus]
 enabled = true
 port = 9099
+
+[outputs.sqlite]          # local logging: SQLite, daily CSVs, HTTP POST
+enabled = true
+path = "pluto-readings.db"
+
+[buffer]                  # store-and-forward for mqtt/http (see below)
+max_snapshots = 10000
 ```
 
 **CLI flags always win over the file**, so existing command lines and
@@ -159,8 +166,11 @@ Every flag except the run-mode ones (`--mock`, `--once`,
 
 ## Publishing readings
 
-Besides the LCD, readings can be sent off the Pi. Both options can run
-at the same time and don't interfere with the display.
+Besides the LCD, readings go to any number of output sinks: `mqtt`,
+`prometheus`, `sqlite`, `csv` and `http` are built in. A sink runs
+when its `[outputs.<sink>]` table is declared and enabled (or turned
+on by a CLI flag); all of them run at the same time, and a failing
+sink never affects the others or the display.
 
 ### MQTT
 
@@ -210,6 +220,70 @@ Exposes the latest snapshot at `http://<pi>:9099/metrics` as gauges
 `pluto_particulates_ug_per_m3{size="2.5"}`, …) for a Prometheus server
 to scrape. Sensors that are missing report `NaN`.
 
+### Local logging: SQLite and CSV
+
+```toml
+[outputs.sqlite]
+enabled = true
+path = "pluto-readings.db"
+max_rows = 100000   # prune the oldest rows beyond this; 0 = keep all
+
+[outputs.csv]
+enabled = true
+dir = "csv"         # one file per day: csv/pluto-YYYY-MM-DD.csv
+```
+
+The SQLite sink appends one row per snapshot (timestamp plus a JSON
+document of the values) and prunes itself so the file stays bounded on
+a small SD card. The CSV sink writes one dated, headered file per day
+and appends across restarts.
+
+### HTTP
+
+```toml
+[outputs.http]
+enabled = true
+url = "https://example.com/ingest"
+token = "..."       # optional; sent as "Authorization: Bearer <token>"
+timeout = 10.0
+```
+
+POSTs the same JSON document MQTT publishes (plus a `device` field) to
+the URL on every refresh.
+
+### Offline buffering
+
+The network sinks (`mqtt`, `http`) sit behind a persistent
+store-and-forward queue, on by default. While the broker or endpoint
+is unreachable, snapshots accumulate in a small SQLite file and are
+retried with exponential backoff; when the connection returns, the
+backlog is replayed in order with the original timestamps — so a WiFi
+dropout, a broker restart, or even a power cut loses nothing. The
+queue is capped per sink (oldest dropped first, with a log line when
+it happens):
+
+```toml
+[buffer]
+enabled = true
+path = "pluto-buffer.db"
+max_snapshots = 10000   # per sink
+```
+
+### Custom sinks
+
+Third-party packages can add sinks the same way they add drivers:
+subclass `pluto.sinks.base.Sink`, implement `publish(snapshot)` (and
+set `buffered = True` if it should go through the offline queue), and
+register the class under the `pluto.sinks` entry-point group:
+
+```toml
+[project.entry-points."pluto.sinks"]
+mysink = "my_package:MySink"
+```
+
+Once installed, `[outputs.mysink]` enables and configures it like any
+built-in sink.
+
 ## Developing off the Pi
 
 Mock mode needs no hardware drivers, so a plain `uv sync` (without the
@@ -226,13 +300,16 @@ uv run pluto --mock -v                          # run the full loop
 ```
 pluto/
 ├── __main__.py   # CLI entry point (python -m pluto)
-├── app.py        # main loop: read drivers → handle taps → draw
+├── app.py        # main loop: read drivers → handle taps → draw → publish
 ├── config.py     # pluto.toml loading, validation, CLI override merging
+├── plugins.py    # shared plugin plumbing (settings, entry points)
 ├── drivers/      # sensor drivers: one module per chip, mock, plugin loading
 │   ├── base.py   # Driver ABC + Reading (value, unit, quality)
 │   └── ...       # bme280, ltr559, mics6814, pms5003, microphone, mock
-├── display.py    # page rendering (PIL) and output devices (LCD / PNG)
-└── publish.py    # optional MQTT / Prometheus publishers
+├── sinks/        # output sinks: mqtt, prometheus, sqlite, csv, http
+│   ├── base.py   # Sink ABC + Snapshot
+│   └── buffer.py # persistent store-and-forward queue for network sinks
+└── display.py    # page rendering (PIL) and output devices (LCD / PNG)
 ```
 
 Run the tests with `uv run pytest`.

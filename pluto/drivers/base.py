@@ -10,9 +10,9 @@ Reads must never raise: a broken sensor degrades to ``missing`` /
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, fields as dataclass_fields
 from enum import Enum
-from typing import Any, Dict, Optional, Tuple
+from typing import Dict, Optional, Tuple
 
-from ..config import ConfigError
+from ..plugins import Configurable
 
 
 class Quality(Enum):
@@ -44,7 +44,7 @@ class Reading:
         return cls(None, unit, Quality.ERROR)
 
 
-class Driver(ABC):
+class Driver(Configurable, ABC):
     """A sensor backend.
 
     Subclasses set ``name`` (also the ``[sensors.<name>]`` config key),
@@ -54,20 +54,9 @@ class Driver(ABC):
     only loads when its config table declares it (used by the mock).
     """
 
-    name: str = ""
+    section = "sensors"
     provides: Tuple[str, ...] = ()
-    settings_keys: Tuple[str, ...] = ()
     autoload: bool = True
-
-    def __init__(self, settings: Optional[Dict[str, Any]] = None):
-        self.settings = dict(settings or {})
-        unknown = sorted(set(self.settings) - set(self.settings_keys))
-        if unknown:
-            allowed = (f"allowed: {', '.join(self.settings_keys)}"
-                       if self.settings_keys else "this driver takes no settings")
-            raise ConfigError(
-                f"unknown setting(s) for [sensors.{self.name}]: "
-                f"{', '.join(unknown)} ({allowed})")
 
     @abstractmethod
     def available(self) -> bool:
@@ -88,31 +77,12 @@ class Driver(ABC):
         """An all-``error`` result, for when a read goes sideways."""
         return {f: Reading.error() for f in self.provides}
 
-    # Typed accessors for self.settings, raising ConfigError on misuse.
-
-    def float_setting(self, key: str, default: float, positive: bool = False) -> float:
-        value = self.settings.get(key, default)
-        if isinstance(value, bool) or not isinstance(value, (int, float)):
-            raise ConfigError(
-                f"sensors.{self.name}.{key} must be a number, got {type(value).__name__}")
-        value = float(value)
-        if positive and value <= 0:
-            raise ConfigError(f"sensors.{self.name}.{key} must be > 0")
-        return value
-
-    def bool_setting(self, key: str, default: bool) -> bool:
-        value = self.settings.get(key, default)
-        if not isinstance(value, bool):
-            raise ConfigError(
-                f"sensors.{self.name}.{key} must be a bool, got {type(value).__name__}")
-        return value
-
 
 @dataclass
 class Readings:
     """A flat snapshot of the standard fields, for the display pages.
 
-    Built from the merged driver readings by ``snapshot()``; anything
+    Built from the merged driver readings by ``flatten()``; anything
     not ``ok`` (or not provided by a loaded driver) is None, which the
     renderer shows as ``--``.
     """
@@ -132,7 +102,7 @@ class Readings:
     noise: Optional[float] = None  # relative amplitude
 
 
-def snapshot(readings: Dict[str, Reading]) -> Readings:
+def flatten(readings: Dict[str, Reading]) -> Readings:
     """Flatten merged driver readings into a Readings for rendering."""
     values = {}
     for f in dataclass_fields(Readings):

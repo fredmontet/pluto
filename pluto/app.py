@@ -2,11 +2,12 @@
 
 import logging
 import time
-from typing import Dict, Optional
+from typing import Optional
 
 from .display import Renderer
-from .drivers import Reading, read_all, snapshot
+from .drivers import flatten, read_all
 from .drivers.base import Readings
+from .sinks.base import Snapshot
 
 log = logging.getLogger(__name__)
 
@@ -18,19 +19,19 @@ TAP_THRESHOLD = 1500
 
 class App:
     def __init__(self, drivers, display, renderer: Renderer, refresh: float = 1.0,
-                 cycle: float = 10.0, publishers=()):
+                 cycle: float = 10.0, sinks=()):
         """cycle=0 disables auto page cycling (tap the proximity sensor to switch)."""
         self.drivers = list(drivers)
         self.display = display
         self.renderer = renderer
         self.refresh = refresh
         self.cycle = cycle
-        self.publishers = list(publishers)
+        self.sinks = list(sinks)
 
     def run(self) -> None:
         page = 0
         n_pages = len(self.renderer.pages)
-        readings = snapshot(read_all(self.drivers))
+        readings = flatten(read_all(self.drivers))
         last_refresh = time.monotonic()
         last_cycle = last_refresh
         last_tap = 0.0
@@ -44,12 +45,12 @@ class App:
                 now = time.monotonic()
 
                 if now - last_refresh >= self.refresh:
-                    merged = read_all(self.drivers)
-                    readings = snapshot(merged)
+                    snap = Snapshot(time.time(), read_all(self.drivers))
+                    readings = flatten(snap.readings)
                     last_refresh = now
                     dirty = True
                     self._log_readings(readings)
-                    self._publish(merged)
+                    self._publish(snap)
 
                 prox = self._proximity()
                 if prox is not None and prox > TAP_THRESHOLD and now - last_tap > TAP_DEBOUNCE:
@@ -75,10 +76,10 @@ class App:
 
     def render_all_pages(self) -> None:
         """Render every page once with a single snapshot, then return."""
-        merged = read_all(self.drivers)
-        readings = snapshot(merged)
+        snap = Snapshot(time.time(), read_all(self.drivers))
+        readings = flatten(snap.readings)
         self._log_readings(readings)
-        self._publish(merged)
+        self._publish(snap)
         for i in range(len(self.renderer.pages)):
             self.display.show(self.renderer.render(i, readings))
         self._close()
@@ -90,18 +91,18 @@ class App:
                 return prox
         return None
 
-    def _publish(self, readings: Dict[str, Reading]) -> None:
-        for publisher in self.publishers:
+    def _publish(self, snap: Snapshot) -> None:
+        for sink in self.sinks:
             try:
-                publisher.publish(readings)
+                sink.publish(snap)
             except Exception:
-                log.warning("%s failed", type(publisher).__name__, exc_info=True)
+                log.warning("%s sink failed", sink.name, exc_info=True)
 
     def _close(self) -> None:
         self.display.close()
-        for publisher in self.publishers:
+        for sink in self.sinks:
             try:
-                publisher.close()
+                sink.close()
             except Exception:
                 pass
         for driver in self.drivers:
