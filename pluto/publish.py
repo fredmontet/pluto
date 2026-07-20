@@ -1,23 +1,23 @@
 """Optional outbound publishers for sensor readings.
 
-Both consume the same Readings snapshot the display uses:
+Both consume the merged per-driver readings the display is built from:
 
-- MQTTPublisher pushes a JSON document per refresh, optionally
+- MQTTPublisher pushes a JSON document per refresh (every field any
+  loaded driver provides, so plugin drivers publish too), optionally
   announcing its sensors to Home Assistant via MQTT discovery.
 - PrometheusExporter exposes the latest snapshot on a /metrics
   endpoint for a Prometheus server to scrape.
 """
 
-import dataclasses
 import json
 import logging
 import math
 import re
 import socket
 import time
-from typing import Optional
+from typing import Dict, Iterable, Optional
 
-from .sensors import Readings
+from .drivers.base import Quality, Reading
 
 log = logging.getLogger(__name__)
 
@@ -37,8 +37,6 @@ _HA_SENSORS = {
     "noise": ("Noise amplitude", None, None),
 }
 
-_PM_FIELDS = ("pm1", "pm25", "pm10")
-
 
 class MQTTPublisher:
     """Publishes each snapshot as JSON to <base>/readings (qos 1).
@@ -56,11 +54,12 @@ class MQTTPublisher:
         username: Optional[str] = None,
         password: Optional[str] = None,
         ha_discovery: bool = False,
-        has_particulates: bool = True,
-        has_noise: bool = True,
+        fields: Optional[Iterable[str]] = None,
         device_id: Optional[str] = None,
         location: Optional[str] = None,
     ):
+        """fields: field names the loaded drivers provide; limits which
+        sensors Home Assistant discovery announces (None = all known)."""
         import paho.mqtt.client as mqtt
 
         self._node = device_id or socket.gethostname()
@@ -69,11 +68,7 @@ class MQTTPublisher:
         self._readings_topic = f"{self._base}/readings"
         self._status_topic = f"{self._base}/status"
         self._ha_discovery = ha_discovery
-        self._skip_fields = set()
-        if not has_particulates:
-            self._skip_fields.update(_PM_FIELDS)
-        if not has_noise:
-            self._skip_fields.add("noise")
+        self._fields = set(fields) if fields is not None else None
 
         client = mqtt.Client(
             callback_api_version=mqtt.CallbackAPIVersion.VERSION2,
@@ -106,7 +101,7 @@ class MQTTPublisher:
         if self._location:
             device["suggested_area"] = self._location
         for field, (name, unit, device_class) in _HA_SENSORS.items():
-            if field in self._skip_fields:
+            if self._fields is not None and field not in self._fields:
                 continue
             config = {
                 "name": name,
@@ -126,13 +121,13 @@ class MQTTPublisher:
                 retain=True,
             )
 
-    def publish(self, readings: Readings) -> None:
-        # Missing sensors are omitted rather than sent as null, so Home
-        # Assistant shows them as unknown instead of the string "None".
+    def publish(self, readings: Dict[str, Reading]) -> None:
+        # Anything not "ok" is omitted rather than sent as null, so Home
+        # Assistant shows it as unknown instead of the string "None".
         payload = {
-            k: round(v, 3)
-            for k, v in dataclasses.asdict(readings).items()
-            if v is not None
+            field: round(r.value, 3)
+            for field, r in readings.items()
+            if r.quality is Quality.OK and isinstance(r.value, (int, float))
         }
         payload["timestamp"] = round(time.time(), 3)
         self._client.publish(self._readings_topic, json.dumps(payload), qos=1)
@@ -168,13 +163,18 @@ class PrometheusExporter:
         start_http_server(port)
         log.info("Prometheus metrics on port %d at /metrics", port)
 
-    def publish(self, readings: Readings) -> None:
-        values = dataclasses.asdict(readings)
+    def publish(self, readings: Dict[str, Reading]) -> None:
         for field, gauge in self._gauges.items():
-            v = values.get(field)
-            gauge.set(v if v is not None else math.nan)
-        for size, v in (("1.0", readings.pm1), ("2.5", readings.pm25), ("10", readings.pm10)):
-            self._pm.labels(size=size).set(v if v is not None else math.nan)
+            gauge.set(self._value(readings, field))
+        for size, field in (("1.0", "pm1"), ("2.5", "pm25"), ("10", "pm10")):
+            self._pm.labels(size=size).set(self._value(readings, field))
+
+    @staticmethod
+    def _value(readings: Dict[str, Reading], field: str) -> float:
+        r = readings.get(field)
+        if r is None or r.quality is not Quality.OK or r.value is None:
+            return math.nan
+        return r.value
 
     def close(self) -> None:
         pass

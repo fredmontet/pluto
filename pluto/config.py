@@ -33,21 +33,23 @@ class DeviceConfig:
 
 
 @dataclass
-class PMSConfig:
-    enabled: bool = True
+class DriverConfig:
+    """One ``[sensors.<driver>]`` table: an enabled flag plus whatever
+    driver-specific settings the table carries. Settings are validated
+    by the driver itself when it is instantiated."""
 
-
-@dataclass
-class NoiseConfig:
     enabled: bool = True
-    interval: float = 5.0  # sampling the mic blocks, so it reads sparingly
+    settings: Dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
 class SensorsConfig:
     refresh: float = 1.0
-    pms: PMSConfig = field(default_factory=PMSConfig)
-    noise: NoiseConfig = field(default_factory=NoiseConfig)
+    drivers: Dict[str, DriverConfig] = field(default_factory=dict)
+
+    def driver(self, name: str) -> DriverConfig:
+        """The config for ``name``, creating a default entry if absent."""
+        return self.drivers.setdefault(name, DriverConfig())
 
 
 @dataclass
@@ -119,20 +121,21 @@ def parse_config(data: Dict[str, Any]) -> Config:
     cfg.device.description = _get(device, "description", str, cfg.device.description, "device")
 
     sensors = _table(data, "sensors")
-    _check_keys(sensors, ("refresh", "pms", "noise"), "[sensors]")
     cfg.sensors.refresh = _positive(
         _get(sensors, "refresh", float, cfg.sensors.refresh, "sensors"), "sensors.refresh")
-
-    pms = _table(sensors, "pms", "sensors")
-    _check_keys(pms, ("enabled",), "[sensors.pms]")
-    cfg.sensors.pms.enabled = _get(pms, "enabled", bool, cfg.sensors.pms.enabled, "sensors.pms")
-
-    noise = _table(sensors, "noise", "sensors")
-    _check_keys(noise, ("enabled", "interval"), "[sensors.noise]")
-    cfg.sensors.noise.enabled = _get(noise, "enabled", bool, cfg.sensors.noise.enabled, "sensors.noise")
-    cfg.sensors.noise.interval = _positive(
-        _get(noise, "interval", float, cfg.sensors.noise.interval, "sensors.noise"),
-        "sensors.noise.interval")
+    # Every other key is a [sensors.<driver>] table. Driver names and
+    # their settings are validated when the drivers are loaded, so
+    # entry-point drivers unknown to this module still work.
+    for name, table in sensors.items():
+        if name == "refresh":
+            continue
+        if not isinstance(table, dict):
+            raise ConfigError(
+                f"[sensors.{name}] must be a table of driver settings, "
+                f"got {type(table).__name__}")
+        enabled = _get(table, "enabled", bool, True, f"sensors.{name}")
+        settings = {k: v for k, v in table.items() if k != "enabled"}
+        cfg.sensors.drivers[name] = DriverConfig(enabled=enabled, settings=settings)
 
     outputs = _table(data, "outputs")
     _check_keys(outputs, ("display", "mqtt", "prometheus"), "[outputs]")
@@ -184,9 +187,9 @@ def apply_cli_overrides(cfg: Config, args: Any) -> Config:
             raise ConfigError("--cycle must be >= 0 (0 disables cycling)")
         cfg.outputs.display.cycle = args.cycle
     if args.no_pms:
-        cfg.sensors.pms.enabled = False
+        cfg.sensors.driver("pms5003").enabled = False
     if args.no_noise:
-        cfg.sensors.noise.enabled = False
+        cfg.sensors.driver("microphone").enabled = False
 
     m = cfg.outputs.mqtt
     if args.mqtt:

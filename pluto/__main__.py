@@ -10,6 +10,7 @@ from . import config as config_module
 from .app import App
 from .config import ConfigError
 from .display import Renderer
+from .drivers import load_drivers, provided_fields
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -67,6 +68,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     try:
         cfg = config_module.load_config(args.config)
         cfg = config_module.apply_cli_overrides(cfg, args)
+        drivers = load_drivers(cfg.sensors, mock=args.mock)
     except ConfigError as e:
         log.error("Configuration error: %s", e)
         return 2
@@ -74,24 +76,16 @@ def main(argv: Optional[List[str]] = None) -> int:
     if cfg.device.id or cfg.device.location:
         log.info("Device %s%s", cfg.device.id or "(unnamed)",
                  f" at {cfg.device.location}" if cfg.device.location else "")
+    if not drivers:
+        log.warning("No sensor drivers available; every reading will show as --")
+
+    fields = provided_fields(drivers)
 
     if args.mock:
         from .display import ConsoleDisplay
-        from .sensors import MockSensors
 
-        sensors = MockSensors(
-            enable_pms=cfg.sensors.pms.enabled,
-            enable_noise=cfg.sensors.noise.enabled,
-        )
         display = ConsoleDisplay(out_dir=args.frames_dir)
     else:
-        from .sensors import EnviroSensors
-
-        sensors = EnviroSensors(
-            enable_pms=cfg.sensors.pms.enabled,
-            enable_noise=cfg.sensors.noise.enabled,
-            noise_interval=cfg.sensors.noise.interval,
-        )
         if cfg.outputs.display.enabled:
             try:
                 from .display import LCD
@@ -122,8 +116,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             username=m.username or None,
             password=m.password or None,
             ha_discovery=m.ha_discovery,
-            has_particulates=sensors.has_particulates,
-            has_noise=sensors.has_noise,
+            fields=fields,
             device_id=cfg.device.id or None,
             location=cfg.device.location or None,
         ))
@@ -133,10 +126,10 @@ def main(argv: Optional[List[str]] = None) -> int:
         publishers.append(PrometheusExporter(port=cfg.outputs.prometheus.port))
 
     renderer = Renderer(
-        has_particulates=sensors.has_particulates,
-        has_noise=sensors.has_noise,
+        has_particulates="pm25" in fields,
+        has_noise="noise" in fields,
     )
-    app = App(sensors, display, renderer, refresh=cfg.sensors.refresh,
+    app = App(drivers, display, renderer, refresh=cfg.sensors.refresh,
               cycle=cfg.outputs.display.cycle, publishers=publishers)
 
     if args.once:

@@ -21,7 +21,7 @@ def test_no_config_file_yields_defaults(tmp_path, monkeypatch):
     assert cfg == config.Config()
     assert cfg.sensors.refresh == 1.0
     assert cfg.outputs.display.cycle == 10.0
-    assert cfg.sensors.pms.enabled and cfg.sensors.noise.enabled
+    assert cfg.sensors.drivers == {}  # nothing declared: all auto-detected
     assert not cfg.outputs.mqtt.enabled
     assert not cfg.outputs.prometheus.enabled
     assert cfg.outputs.display.enabled
@@ -58,12 +58,15 @@ def test_full_file(tmp_path):
         [sensors]
         refresh = 2
 
-        [sensors.pms]
+        [sensors.pms5003]
         enabled = false
 
-        [sensors.noise]
+        [sensors.microphone]
         enabled = false
         interval = 10.0
+
+        [sensors.bme280]
+        comp_factor = 3.0
 
         [outputs.display]
         enabled = false
@@ -86,9 +89,11 @@ def test_full_file(tmp_path):
     assert cfg.device.location == "balcony"
     assert cfg.device.description == "north-facing"
     assert cfg.sensors.refresh == 2.0
-    assert not cfg.sensors.pms.enabled
-    assert not cfg.sensors.noise.enabled
-    assert cfg.sensors.noise.interval == 10.0
+    assert not cfg.sensors.drivers["pms5003"].enabled
+    assert not cfg.sensors.drivers["microphone"].enabled
+    assert cfg.sensors.drivers["microphone"].settings == {"interval": 10.0}
+    assert cfg.sensors.drivers["bme280"].enabled
+    assert cfg.sensors.drivers["bme280"].settings == {"comp_factor": 3.0}
     assert not cfg.outputs.display.enabled
     assert cfg.outputs.display.cycle == 0.0
     m = cfg.outputs.mqtt
@@ -111,15 +116,14 @@ def test_partial_file_keeps_other_defaults(tmp_path):
 @pytest.mark.parametrize("doc, match", [
     ("[displays]\n", "unknown key"),
     ("[device]\nname = \"x\"\n", r"unknown key\(s\) in \[device\]: name"),
-    ("[sensors.pms]\ninterval = 1.0\n", r"\[sensors.pms\]"),
     ("[outputs.mqtt]\nhosts = \"b\"\n", r"\[outputs.mqtt\]"),
     ("[sensors]\nrefresh = \"fast\"\n", "sensors.refresh must be a float"),
     ("[sensors]\nrefresh = true\n", "sensors.refresh must be a float"),
-    ("[sensors.pms]\nenabled = 1\n", "sensors.pms.enabled must be a bool"),
+    ("[sensors]\nbme280 = 3\n", r"\[sensors.bme280\] must be a table"),
+    ("[sensors.pms5003]\nenabled = 1\n", "sensors.pms5003.enabled must be a bool"),
     ("[outputs.mqtt]\nport = 1883.5\n", "outputs.mqtt.port must be a int"),
     ("[outputs.mqtt]\nhost = 42\n", "outputs.mqtt.host must be a str"),
     ("[sensors]\nrefresh = 0\n", "sensors.refresh must be > 0"),
-    ("[sensors.noise]\ninterval = -1\n", "sensors.noise.interval must be > 0"),
     ("[outputs.display]\ncycle = -5\n", "outputs.display.cycle must be >= 0"),
     ("[outputs.mqtt]\nport = 0\n", "between 1 and 65535"),
     ("[outputs.prometheus]\nport = 70000\n", "between 1 and 65535"),
@@ -146,7 +150,7 @@ def test_no_flags_keep_file_values():
 
 def test_flags_override_file():
     cfg = parse_config({
-        "sensors": {"refresh": 7.0, "pms": {"enabled": True}},
+        "sensors": {"refresh": 7.0, "pms5003": {"enabled": True}},
         "outputs": {
             "display": {"cycle": 3.0},
             "mqtt": {"enabled": True, "host": "file-broker", "port": 2000,
@@ -160,7 +164,7 @@ def test_flags_override_file():
     ], cfg)
     assert cfg.sensors.refresh == 0.5
     assert cfg.outputs.display.cycle == 0.0
-    assert not cfg.sensors.pms.enabled
+    assert not cfg.sensors.drivers["pms5003"].enabled
     assert cfg.outputs.mqtt.host == "cli-broker"
     assert cfg.outputs.mqtt.port == 3000
     assert cfg.outputs.mqtt.topic == "cli/topic"
@@ -172,7 +176,7 @@ def test_no_flags_no_file_equals_legacy_defaults():
     cfg = apply([])
     assert cfg.sensors.refresh == 1.0
     assert cfg.outputs.display.cycle == 10.0
-    assert cfg.sensors.pms.enabled and cfg.sensors.noise.enabled
+    assert cfg.sensors.drivers == {}
     assert not cfg.outputs.mqtt.enabled and not cfg.outputs.prometheus.enabled
 
 
@@ -227,5 +231,21 @@ def test_example_config_is_valid_and_matches_defaults():
     """pluto.example.toml must parse and describe exactly the defaults."""
     import pathlib
 
+    from pluto.drivers import load_drivers
+
     example = pathlib.Path(__file__).resolve().parent.parent / "pluto.example.toml"
-    assert load_config(str(example)) == config.Config()
+    cfg = load_config(str(example))
+    assert cfg.device == config.DeviceConfig()
+    assert cfg.outputs == config.OutputsConfig()
+    assert cfg.sensors.refresh == 1.0
+    # The declared driver tables must spell out exactly the defaults.
+    assert cfg.sensors.drivers == {
+        "bme280": config.DriverConfig(True, {"comp_factor": 2.25}),
+        "ltr559": config.DriverConfig(True, {}),
+        "mics6814": config.DriverConfig(True, {}),
+        "pms5003": config.DriverConfig(True, {}),
+        "microphone": config.DriverConfig(True, {"interval": 5.0}),
+    }
+    # Every declared driver name and setting is accepted by the loader
+    # (off-Pi the hardware probes fail, so nothing actually loads).
+    load_drivers(cfg.sensors)

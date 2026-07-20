@@ -87,11 +87,10 @@ description = "north-facing, behind the planter"
 [sensors]
 refresh = 1.0             # seconds between sensor reads
 
-[sensors.pms]
-enabled = true            # PMS5003 particulates
+[sensors.pms5003]
+enabled = false           # skip the particulate sensor
 
-[sensors.noise]
-enabled = true            # microphone
+[sensors.microphone]
 interval = 5.0            # seconds between (blocking) mic samples
 
 [outputs.display]         # one sub-table per output sink
@@ -112,6 +111,31 @@ port = 9099
 service units keep working unchanged. Precedence is: CLI flag →
 `PLUTO_MQTT_PASSWORD` environment variable (password only) → config
 file → built-in default.
+
+### Sensor drivers
+
+Each chip is read by its own driver: `bme280` (temperature, humidity,
+pressure), `ltr559` (light, proximity), `mics6814` (gas), `pms5003`
+(particulates), `microphone` (noise), plus `mock` for development.
+Built-in drivers are auto-detected — a driver loads when its hardware
+responds and drops out gracefully when it doesn't — and each
+`[sensors.<driver>]` table can disable one (`enabled = false`) or pass
+it settings. The mock driver is the exception: it only loads with
+`--mock` or when a `[sensors.mock]` table declares it.
+
+Third-party packages can add drivers without touching pluto: subclass
+`pluto.drivers.base.Driver`, implement `available()` and `read()`
+(returning a `Reading` per field), and register the class under the
+`pluto.drivers` entry-point group:
+
+```toml
+[project.entry-points."pluto.drivers"]
+mysensor = "my_package:MySensorDriver"
+```
+
+Once the package is installed, the driver is configured like any other
+via `[sensors.mysensor]`, and its readings are published over MQTT
+alongside the built-in fields.
 
 ## Options
 
@@ -202,9 +226,11 @@ uv run pluto --mock -v                          # run the full loop
 ```
 pluto/
 ├── __main__.py   # CLI entry point (python -m pluto)
-├── app.py        # main loop: read → handle taps → draw
+├── app.py        # main loop: read drivers → handle taps → draw
 ├── config.py     # pluto.toml loading, validation, CLI override merging
-├── sensors.py    # hardware access with graceful fallback, plus mock sensors
+├── drivers/      # sensor drivers: one module per chip, mock, plugin loading
+│   ├── base.py   # Driver ABC + Reading (value, unit, quality)
+│   └── ...       # bme280, ltr559, mics6814, pms5003, microphone, mock
 ├── display.py    # page rendering (PIL) and output devices (LCD / PNG)
 └── publish.py    # optional MQTT / Prometheus publishers
 ```

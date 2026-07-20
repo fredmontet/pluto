@@ -1,22 +1,26 @@
-"""Main loop: read sensors, handle page switching, draw frames."""
+"""Main loop: read drivers, handle page switching, draw frames."""
 
 import logging
 import time
+from typing import Dict, Optional
 
 from .display import Renderer
-from .sensors import TAP_THRESHOLD, Readings
+from .drivers import Reading, read_all, snapshot
+from .drivers.base import Readings
 
 log = logging.getLogger(__name__)
 
 TICK = 0.1  # seconds between proximity/tap checks
 TAP_DEBOUNCE = 0.5
+# Proximity value above which we consider the sensor "tapped".
+TAP_THRESHOLD = 1500
 
 
 class App:
-    def __init__(self, sensors, display, renderer: Renderer, refresh: float = 1.0, cycle: float = 10.0,
-                 publishers=()):
+    def __init__(self, drivers, display, renderer: Renderer, refresh: float = 1.0,
+                 cycle: float = 10.0, publishers=()):
         """cycle=0 disables auto page cycling (tap the proximity sensor to switch)."""
-        self.sensors = sensors
+        self.drivers = list(drivers)
         self.display = display
         self.renderer = renderer
         self.refresh = refresh
@@ -26,25 +30,28 @@ class App:
     def run(self) -> None:
         page = 0
         n_pages = len(self.renderer.pages)
-        readings = self.sensors.read()
+        readings = snapshot(read_all(self.drivers))
         last_refresh = time.monotonic()
         last_cycle = last_refresh
         last_tap = 0.0
         dirty = True
 
+        log.info("Running with drivers: %s",
+                 ", ".join(d.name for d in self.drivers) or "(none)")
         log.info("Running with pages: %s", ", ".join(name for name, _ in self.renderer.pages))
         try:
             while True:
                 now = time.monotonic()
 
                 if now - last_refresh >= self.refresh:
-                    readings = self.sensors.read()
+                    merged = read_all(self.drivers)
+                    readings = snapshot(merged)
                     last_refresh = now
                     dirty = True
                     self._log_readings(readings)
-                    self._publish(readings)
+                    self._publish(merged)
 
-                prox = self.sensors.proximity()
+                prox = self._proximity()
                 if prox is not None and prox > TAP_THRESHOLD and now - last_tap > TAP_DEBOUNCE:
                     page = (page + 1) % n_pages
                     last_tap = now
@@ -68,14 +75,22 @@ class App:
 
     def render_all_pages(self) -> None:
         """Render every page once with a single snapshot, then return."""
-        readings = self.sensors.read()
+        merged = read_all(self.drivers)
+        readings = snapshot(merged)
         self._log_readings(readings)
-        self._publish(readings)
+        self._publish(merged)
         for i in range(len(self.renderer.pages)):
             self.display.show(self.renderer.render(i, readings))
         self._close()
 
-    def _publish(self, readings: Readings) -> None:
+    def _proximity(self) -> Optional[float]:
+        for driver in self.drivers:
+            prox = driver.proximity()
+            if prox is not None:
+                return prox
+        return None
+
+    def _publish(self, readings: Dict[str, Reading]) -> None:
         for publisher in self.publishers:
             try:
                 publisher.publish(readings)
@@ -87,6 +102,11 @@ class App:
         for publisher in self.publishers:
             try:
                 publisher.close()
+            except Exception:
+                pass
+        for driver in self.drivers:
+            try:
+                driver.close()
             except Exception:
                 pass
 

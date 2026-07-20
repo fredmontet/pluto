@@ -9,7 +9,7 @@ from typing import Callable, List, Optional, Tuple
 
 from PIL import Image, ImageDraw, ImageFont
 
-from .sensors import Readings
+from .drivers.base import Readings
 
 log = logging.getLogger(__name__)
 

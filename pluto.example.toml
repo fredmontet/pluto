@@ -24,17 +24,40 @@ description = ""  # free-form notes, not used by pluto itself
 
 
 # ── Sensors ─────────────────────────────────────────────────────────
+# One [sensors.<driver>] table per driver. Built-in drivers are
+# auto-detected: they load whenever their hardware responds, so these
+# tables are only needed to disable one (enabled = false) or change a
+# setting. Third-party drivers installed via the `pluto.drivers`
+# entry-point group are declared and configured the same way; an
+# unknown driver name is an error.
 
 [sensors]
 refresh = 1.0     # seconds between sensor reads (CLI: --refresh)
 
-[sensors.pms]
-enabled = true    # PMS5003 particulate sensor (CLI: --no-pms to disable)
+[sensors.bme280]      # temperature / humidity / pressure
+enabled = true
+comp_factor = 2.25    # CPU-heat compensation strength (higher = weaker)
 
-[sensors.noise]
-enabled = true    # MEMS microphone (CLI: --no-noise to disable)
-interval = 5.0    # seconds between mic samples; reading the mic blocks,
-                  # so it is sampled less often than the other sensors
+[sensors.ltr559]      # light / proximity (also drives tap-to-switch-page)
+enabled = true
+
+[sensors.mics6814]    # oxidising / reducing / NH3 gas
+enabled = true
+
+[sensors.pms5003]     # particulates (CLI: --no-pms to disable)
+enabled = true
+
+[sensors.microphone]  # noise level (CLI: --no-noise to disable)
+enabled = true
+interval = 5.0        # seconds between mic samples; reading the mic
+                      # blocks, so it runs less often than the rest
+
+# The mock driver replaces the hardware with drifting fake values. It
+# is never auto-detected: it loads with --mock, or when declared here.
+#[sensors.mock]
+#enabled = true
+#pms = true       # include fake particulate readings
+#noise = true     # include a fake noise level
 
 
 # ── Outputs ─────────────────────────────────────────────────────────
