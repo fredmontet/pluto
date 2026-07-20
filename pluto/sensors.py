@@ -42,9 +42,11 @@ class EnviroSensors:
     # The BME280 sits right next to the Pi's SoC and reads warm; the usual
     # Pimoroni-recommended compensation subtracts a fraction of the CPU heat.
     COMP_FACTOR = 2.25
-    NOISE_INTERVAL = 5.0  # sampling the mic blocks, so do it sparingly
 
-    def __init__(self, enable_pms: bool = True, enable_noise: bool = True):
+    def __init__(self, enable_pms: bool = True, enable_noise: bool = True,
+                 noise_interval: float = 5.0):
+        """noise_interval: seconds between mic samples (reading it blocks)."""
+        self._noise_interval = noise_interval
         self._bme280 = None
         self._ltr559 = None
         self._gas = None
@@ -168,7 +170,7 @@ class EnviroSensors:
 
         if self._noise is not None:
             now = time.monotonic()
-            if now - self._last_noise_read >= self.NOISE_INTERVAL:
+            if now - self._last_noise_read >= self._noise_interval:
                 self._last_noise_read = now
                 try:
                     _low, _mid, _high, amp = self._noise.get_noise_profile()

@@ -62,20 +62,76 @@ sudo systemctl enable --now pluto
 (The unit assumes the repo lives at `/home/pi/pluto` and runs as user
 `pi` — edit `pluto.service` if your setup differs.)
 
+## Configuration
+
+Pluto is configured with a TOML file, CLI flags, or both. On startup it
+loads `pluto.toml` from the current directory (the repo root when using
+the systemd unit) if one exists; `--config PATH` points it somewhere
+else. With no file and no flags it runs with the defaults described
+below.
+
+```bash
+cp pluto.example.toml pluto.toml   # then edit to taste
+uv run pluto
+```
+
+[`pluto.example.toml`](pluto.example.toml) documents every option with
+its default. The file has three sections:
+
+```toml
+[device]                  # identity of this Pi
+id = "balcony-pi"         # default: hostname; used in MQTT topics & HA
+location = "balcony"      # becomes the suggested area in Home Assistant
+description = "north-facing, behind the planter"
+
+[sensors]
+refresh = 1.0             # seconds between sensor reads
+
+[sensors.pms]
+enabled = true            # PMS5003 particulates
+
+[sensors.noise]
+enabled = true            # microphone
+interval = 5.0            # seconds between (blocking) mic samples
+
+[outputs.display]         # one sub-table per output sink
+enabled = true            # false = headless: publish without the LCD
+cycle = 10.0              # seconds between page changes, 0 to disable
+
+[outputs.mqtt]
+enabled = true
+host = "broker.local"
+ha_discovery = true       # port, topic, username, password also available
+
+[outputs.prometheus]
+enabled = true
+port = 9099
+```
+
+**CLI flags always win over the file**, so existing command lines and
+service units keep working unchanged. Precedence is: CLI flag →
+`PLUTO_MQTT_PASSWORD` environment variable (password only) → config
+file → built-in default.
+
 ## Options
 
 ```
-pluto [--refresh SECONDS] [--cycle SECONDS] [--no-pms] [--no-noise]
-      [--mock] [--once] [--frames-dir DIR] [-v]
+pluto [--config PATH] [--refresh SECONDS] [--cycle SECONDS]
+      [--no-pms] [--no-noise] [--mock] [--once] [--frames-dir DIR] [-v]
       [--mqtt HOST] [--mqtt-port PORT] [--mqtt-topic TOPIC]
       [--mqtt-user USER] [--mqtt-password PASS] [--ha-discovery]
       [--prometheus PORT]
 ```
 
+- `--config` — path to the TOML config file (default: `./pluto.toml` if present)
 - `--refresh` — seconds between sensor reads (default 1)
 - `--cycle` — seconds between automatic page changes, `0` to disable (default 10)
 - `--no-pms` / `--no-noise` — skip the particulate sensor / microphone
 - `--once` — render each page once and exit (smoke test)
+
+Every flag except the run-mode ones (`--mock`, `--once`,
+`--frames-dir`, `-v`) has a config-file equivalent — see
+[Configuration](#configuration).
 
 ## Publishing readings
 
@@ -86,6 +142,15 @@ at the same time and don't interfere with the display.
 
 ```bash
 uv run pluto --mqtt broker.local --ha-discovery
+```
+
+or, in `pluto.toml`:
+
+```toml
+[outputs.mqtt]
+enabled = true
+host = "broker.local"
+ha_discovery = true
 ```
 
 Each refresh publishes a JSON snapshot to `pluto/<hostname>/readings`
@@ -106,6 +171,14 @@ variable, handy in the systemd unit).
 
 ```bash
 uv run pluto --prometheus 9099
+```
+
+or, in `pluto.toml`:
+
+```toml
+[outputs.prometheus]
+enabled = true
+port = 9099
 ```
 
 Exposes the latest snapshot at `http://<pi>:9099/metrics` as gauges
@@ -130,6 +203,10 @@ uv run pluto --mock -v                          # run the full loop
 pluto/
 ├── __main__.py   # CLI entry point (python -m pluto)
 ├── app.py        # main loop: read → handle taps → draw
+├── config.py     # pluto.toml loading, validation, CLI override merging
 ├── sensors.py    # hardware access with graceful fallback, plus mock sensors
-└── display.py    # page rendering (PIL) and output devices (LCD / PNG)
+├── display.py    # page rendering (PIL) and output devices (LCD / PNG)
+└── publish.py    # optional MQTT / Prometheus publishers
 ```
+
+Run the tests with `uv run pytest`.

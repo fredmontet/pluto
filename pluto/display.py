@@ -193,6 +193,16 @@ class LCD:
             pass
 
 
+class NullDisplay:
+    """No-op output device for headless runs (outputs.display.enabled = false)."""
+
+    def show(self, image: Image.Image) -> None:
+        pass
+
+    def close(self) -> None:
+        pass
+
+
 class ConsoleDisplay:
     """Mock output device: optionally saves each frame as a PNG."""
 

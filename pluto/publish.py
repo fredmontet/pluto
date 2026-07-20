@@ -58,11 +58,14 @@ class MQTTPublisher:
         ha_discovery: bool = False,
         has_particulates: bool = True,
         has_noise: bool = True,
+        device_id: Optional[str] = None,
+        location: Optional[str] = None,
     ):
         import paho.mqtt.client as mqtt
 
-        hostname = socket.gethostname()
-        self._base = base_topic or f"pluto/{hostname}"
+        self._node = device_id or socket.gethostname()
+        self._location = location
+        self._base = base_topic or f"pluto/{self._node}"
         self._readings_topic = f"{self._base}/readings"
         self._status_topic = f"{self._base}/status"
         self._ha_discovery = ha_discovery
@@ -74,7 +77,7 @@ class MQTTPublisher:
 
         client = mqtt.Client(
             callback_api_version=mqtt.CallbackAPIVersion.VERSION2,
-            client_id=f"pluto-{hostname}",
+            client_id=f"pluto-{self._node}",
         )
         if username:
             client.username_pw_set(username, password)
@@ -93,13 +96,15 @@ class MQTTPublisher:
 
     def _announce(self) -> None:
         """Publish retained Home Assistant discovery configs for every sensor."""
-        node = re.sub(r"\W", "_", socket.gethostname())
+        node = re.sub(r"\W", "_", self._node)
         device = {
             "identifiers": [f"pluto_{node}"],
-            "name": f"Enviro+ {socket.gethostname()}",
+            "name": f"Enviro+ {self._node}",
             "manufacturer": "Pimoroni",
             "model": "Enviro+",
         }
+        if self._location:
+            device["suggested_area"] = self._location
         for field, (name, unit, device_class) in _HA_SENSORS.items():
             if field in self._skip_fields:
                 continue

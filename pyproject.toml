@@ -10,6 +10,8 @@ dependencies = [
     "pillow>=9.0",
     "paho-mqtt>=2.0",
     "prometheus-client>=0.19",
+    # TOML parsing is stdlib (tomllib) from Python 3.11.
+    "tomli>=2.0; python_version < '3.11'",
 ]
 
 [project.optional-dependencies]
@@ -21,6 +23,11 @@ hardware = [
 
 [project.scripts]
 pluto = "pluto.__main__:main"
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+]
 
 [build-system]
 requires = ["hatchling"]

@@ -1,0 +1,62 @@
+# Example configuration for pluto.
+#
+# Copy this file to `pluto.toml` in the directory you run pluto from
+# (the repo root when using the systemd unit), or point pluto at it
+# explicitly:
+#
+#     uv run pluto --config /path/to/pluto.toml
+#
+# Every option is shown with its default value, so an empty file — or
+# no file at all — behaves exactly like running pluto with no flags.
+# CLI flags always take precedence over this file.
+
+
+# ── Device ──────────────────────────────────────────────────────────
+# Identity of this particular Pi. Purely descriptive, except that `id`
+# (when set) replaces the hostname in the default MQTT topic, MQTT
+# client id and Home Assistant device name, and `location` is passed
+# to Home Assistant as the suggested area.
+
+[device]
+id = ""           # default: the Pi's hostname
+location = ""     # e.g. "living-room"
+description = ""  # free-form notes, not used by pluto itself
+
+
+# ── Sensors ─────────────────────────────────────────────────────────
+
+[sensors]
+refresh = 1.0     # seconds between sensor reads (CLI: --refresh)
+
+[sensors.pms]
+enabled = true    # PMS5003 particulate sensor (CLI: --no-pms to disable)
+
+[sensors.noise]
+enabled = true    # MEMS microphone (CLI: --no-noise to disable)
+interval = 5.0    # seconds between mic samples; reading the mic blocks,
+                  # so it is sampled less often than the other sensors
+
+
+# ── Outputs ─────────────────────────────────────────────────────────
+# One sub-table per sink. All of them can run at the same time.
+
+[outputs.display]
+enabled = true    # set to false to run headless (publish only, no LCD)
+cycle = 10.0      # seconds between automatic page changes, 0 to disable
+                  # (CLI: --cycle)
+
+[outputs.mqtt]
+enabled = false   # publish a JSON snapshot per refresh (CLI: --mqtt HOST)
+host = ""         # broker hostname or IP; required when enabled
+port = 1883       # (CLI: --mqtt-port)
+topic = ""        # base topic; default: pluto/<device id or hostname>
+                  # (CLI: --mqtt-topic)
+username = ""     # (CLI: --mqtt-user)
+password = ""     # (CLI: --mqtt-password or PLUTO_MQTT_PASSWORD; prefer
+                  # the environment variable over storing it here)
+ha_discovery = false  # announce sensors via Home Assistant MQTT
+                      # discovery (CLI: --ha-discovery)
+
+[outputs.prometheus]
+enabled = false   # expose /metrics for Prometheus (CLI: --prometheus PORT)
+port = 9099
