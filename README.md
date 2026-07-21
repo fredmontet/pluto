@@ -13,7 +13,7 @@ pages.
 | LTR559 | Light (lux), proximity |
 | MICS6814 | Oxidising, reducing and NH3 gas resistance (kΩ) |
 | PMS5003 (optional, plugged into the Enviro+ port) | PM1.0, PM2.5, PM10 |
-| MEMS microphone | Noise amplitude |
+| MEMS microphone | Noise level (dB relative to full scale) |
 
 ## Pages
 
@@ -22,7 +22,7 @@ pages.
 3. **Light** — lux and proximity
 4. **Gas** — oxidising / reducing / NH3
 5. **Particles** — PM1.0 / PM2.5 / PM10 (only if a PMS5003 is attached)
-6. **Noise** — microphone amplitude with a level bar (only if the mic overlay is enabled)
+6. **Noise** — noise level in dB with a level bar (only if the mic overlay is enabled)
 
 Pages advance automatically every 10 seconds. **Wave your hand over the
 proximity sensor to switch to the next page manually.**
@@ -172,6 +172,14 @@ when its `[outputs.<sink>]` table is declared and enabled (or turned
 on by a CLI flag); all of them run at the same time, and a failing
 sink never affects the others or the display.
 
+Every sink emits the same self-describing data model: consistent
+metric names and units ([docs/metrics.md](docs/metrics.md) has the
+full catalogue), a UTC ISO 8601 timestamp, the device id (hostname
+unless `[device] id` overrides it), the configured location and
+description, and the pluto version. On an RTC-less Pi that hasn't
+NTP-synced yet, snapshots carry `time_uncertain: true` until the
+clock looks plausible.
+
 ### MQTT
 
 ```bash
@@ -218,7 +226,8 @@ port = 9099
 Exposes the latest snapshot at `http://<pi>:9099/metrics` as gauges
 (`pluto_temperature_celsius`, `pluto_humidity_percent`,
 `pluto_particulates_ug_per_m3{size="2.5"}`, …) for a Prometheus server
-to scrape. Sensors that are missing report `NaN`.
+to scrape, each labelled with the `device` and `location` from the
+`[device]` section. Sensors that are missing report `NaN`.
 
 ### Local logging: SQLite and CSV
 
@@ -302,6 +311,7 @@ pluto/
 ├── __main__.py   # CLI entry point (python -m pluto)
 ├── app.py        # main loop: read drivers → handle taps → draw → publish
 ├── config.py     # pluto.toml loading, validation, CLI override merging
+├── model.py      # Snapshot data model + the metric catalogue (docs/metrics.md)
 ├── plugins.py    # shared plugin plumbing (settings, entry points)
 ├── drivers/      # sensor drivers: one module per chip, mock, plugin loading
 │   ├── base.py   # Driver ABC + Reading (value, unit, quality)

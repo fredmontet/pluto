@@ -1,15 +1,16 @@
 """CSV sink: one daily-rotated file of snapshots.
 
-Writes <dir>/pluto-YYYY-MM-DD.csv (local time), starting a fresh file
-with a header row at midnight and appending to an existing file after
-a restart. Columns are the standard fields plus any extra fields the
-loaded drivers provide, so plugin readings are captured too.
+Writes <dir>/pluto-YYYY-MM-DD.csv (UTC date, matching the on-wire
+timestamps), starting a fresh file with a header row at midnight and
+appending to an existing file after a restart. Each row carries the
+full snapshot metadata followed by the metric columns — the standard
+fields plus any extra fields the loaded drivers provide, so plugin
+readings are captured too.
 """
 
 import csv
 import logging
 import os
-import time
 from dataclasses import fields as dataclass_fields
 from typing import Any, Dict, Optional
 
@@ -18,6 +19,9 @@ from ..config import ConfigError
 from ..drivers.base import Quality, Readings
 
 log = logging.getLogger(__name__)
+
+_META_COLUMNS = ("time", "device", "location", "description", "version",
+                 "time_uncertain")
 
 
 class CSVSink(Sink):
@@ -40,11 +44,12 @@ class CSVSink(Sink):
         log.info("Writing daily CSV files into %s/", self._dir)
 
     def publish(self, snapshot: Snapshot) -> None:
-        local = time.localtime(snapshot.timestamp)
-        day = time.strftime("%Y-%m-%d", local)
+        day = snapshot.iso_timestamp[:10]  # the UTC date
         if day != self._date:
             self._rotate(day)
-        row = [time.strftime("%Y-%m-%dT%H:%M:%S", local)]
+        row = [snapshot.iso_timestamp, snapshot.device_id, snapshot.location,
+               snapshot.description, snapshot.version,
+               int(snapshot.time_uncertain)]
         for column in self._columns:
             r = snapshot.readings.get(column)
             ok = r is not None and r.quality is Quality.OK and r.value is not None
@@ -60,7 +65,7 @@ class CSVSink(Sink):
         self._file = open(path, "a", newline="")
         self._writer = csv.writer(self._file)
         if needs_header:
-            self._writer.writerow(["time"] + self._columns)
+            self._writer.writerow(list(_META_COLUMNS) + self._columns)
         self._date = day
 
     def close(self) -> None:

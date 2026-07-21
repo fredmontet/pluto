@@ -1,14 +1,16 @@
 """Tests for the sink system: loading, buffering, queue cap, new sinks."""
 
 import json
+from datetime import datetime, timezone
 
 import pytest
 
 from pluto import config as config_module
 from pluto.config import BufferConfig, ConfigError
 from pluto.drivers.base import Reading
+from pluto.model import VERSION, Snapshot
 from pluto.sinks import SinkContext, load_sinks, registry
-from pluto.sinks.base import Sink, Snapshot
+from pluto.sinks.base import Sink
 from pluto.sinks.buffer import BufferedSink, SnapshotQueue
 from pluto.sinks.mqtt import MQTTSink
 
@@ -18,8 +20,18 @@ def outputs(data=None):
     return config_module.parse_config({"outputs": data or {}}).outputs
 
 
-def snap(ts, temperature=20.0):
-    return Snapshot(ts, {"temperature": Reading.ok(temperature, "°C")})
+def ts(seconds):
+    return datetime.fromtimestamp(seconds, tz=timezone.utc)
+
+
+def iso(seconds):
+    return ts(seconds).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+
+def snap(seconds, temperature=20.0):
+    return Snapshot(ts(seconds),
+                    {"temperature": Reading.ok(temperature, "°C")},
+                    device_id="test-pi")
 
 
 def buffer_cfg(tmp_path, **kwargs):
@@ -193,13 +205,14 @@ def test_buffering_across_a_network_outage(tmp_path, fake_mqtt):
     client.on_connect(client, None, None, 0, None)
     assert buffered.flush() is True
     payloads = readings_payloads(client)
-    assert [p["timestamp"] for p in payloads] == [1.0, 2.0]
+    assert [p["timestamp"] for p in payloads] == [iso(1.0), iso(2.0)]
     assert queue.pending("mqtt") == 0
 
     # Subsequent publishes flow straight through.
     buffered.publish(snap(3.0))
     assert buffered.flush() is True
-    assert [p["timestamp"] for p in readings_payloads(client)] == [1.0, 2.0, 3.0]
+    assert [p["timestamp"] for p in readings_payloads(client)] == [
+        iso(1.0), iso(2.0), iso(3.0)]
 
 
 def test_backoff_grows_exponentially(tmp_path, fake_mqtt):
@@ -248,7 +261,7 @@ def test_queue_caps_and_drops_oldest(tmp_path):
     assert drops == [0, 0, 0, 1, 1]
     assert queue.pending("mqtt") == 3
     kept = [s.timestamp for _, s in queue.oldest("mqtt", 10)]
-    assert kept == [3.0, 4.0, 5.0]
+    assert kept == [ts(3.0), ts(4.0), ts(5.0)]
 
 
 def test_buffered_sink_logs_drops(tmp_path, caplog):
@@ -274,7 +287,9 @@ def test_queue_survives_restart(tmp_path):
     reopened = SnapshotQueue(path, max_snapshots=10)
     assert reopened.pending("mqtt") == 2
     restored = [s for _, s in reopened.oldest("mqtt", 10)]
-    assert [s.timestamp for s in restored] == [1.0, 2.0]
+    assert [s.timestamp for s in restored] == [ts(1.0), ts(2.0)]
+    assert restored[0].device_id == "test-pi"
+    assert restored[0].version == VERSION
     r = restored[0].readings["temperature"]
     assert (r.value, r.unit, r.quality) == (20.0, "°C", Reading.ok(0).quality)
 
@@ -304,9 +319,36 @@ def test_sqlite_sink_appends_and_prunes(tmp_path):
     sink.close()
 
     rows = sqlite3.connect(path).execute(
-        "SELECT timestamp, data FROM readings ORDER BY id").fetchall()
-    assert [ts for ts, _ in rows] == [3.0, 4.0, 5.0]
-    assert json.loads(rows[-1][1]) == {"temperature": 25.0}
+        "SELECT timestamp, device, version, time_uncertain, data"
+        " FROM readings ORDER BY id").fetchall()
+    assert [row[0] for row in rows] == [iso(3.0), iso(4.0), iso(5.0)]
+    assert rows[-1][1] == "test-pi"
+    assert rows[-1][2] == VERSION
+    assert rows[-1][3] == 0
+    assert json.loads(rows[-1][4]) == {"temperature": {
+        "value": 25.0, "unit": "°C", "quality": "ok", "driver": ""}}
+
+
+def test_sqlite_sink_keeps_quality_of_missing_sensors(tmp_path):
+    """Payloads omit non-ok readings, but SQLite records them."""
+    import sqlite3
+
+    from pluto.model import json_payload
+    from pluto.sinks.sqlite import SQLiteSink
+
+    snapshot = snap(1.0)
+    snapshot.readings["pm25"] = Reading.missing("µg/m³")
+    snapshot.readings["pm25"].driver = "pms5003"
+    assert "pm25" not in json_payload(snapshot)  # current wire behaviour
+
+    path = str(tmp_path / "data.db")
+    sink = SQLiteSink({"path": path})
+    sink.publish(snapshot)
+    sink.close()
+    (data,) = sqlite3.connect(path).execute(
+        "SELECT data FROM readings").fetchone()
+    assert json.loads(data)["pm25"] == {
+        "value": None, "unit": "µg/m³", "quality": "missing", "driver": "pms5003"}
 
 
 def test_csv_sink_rotates_daily(tmp_path):
@@ -325,9 +367,14 @@ def test_csv_sink_rotates_daily(tmp_path):
     assert len(files) == 2
     with open(files[0], newline="") as f:
         rows = list(csv_module.reader(f))
-    assert rows[0][0] == "time" and "temperature" in rows[0]
+    assert rows[0][:6] == ["time", "device", "location", "description",
+                           "version", "time_uncertain"]
+    assert "temperature" in rows[0]
     col = rows[0].index("temperature")
     assert [r[col] for r in rows[1:]] == ["21.0", "22.0"]
+    assert rows[1][0] == iso(day1)
+    assert rows[1][1] == "test-pi"
+    assert rows[1][4] == VERSION
     with open(files[1], newline="") as f:
         assert len(list(csv_module.reader(f))) == 2  # header + one row
 
@@ -355,8 +402,7 @@ def test_http_sink_posts_json_with_token(monkeypatch):
         return FakeResponse()
 
     monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
-    sink = HTTPSink({"url": "https://example.com/ingest", "token": "tok", "timeout": 3.0},
-                    SinkContext(device=config_module.DeviceConfig(id="balcony-pi")))
+    sink = HTTPSink({"url": "https://example.com/ingest", "token": "tok", "timeout": 3.0})
     sink.publish(snap(5.0))
 
     request = seen["request"]
@@ -365,7 +411,44 @@ def test_http_sink_posts_json_with_token(monkeypatch):
     assert request.get_header("Authorization") == "Bearer tok"
     assert seen["timeout"] == 3.0
     body = json.loads(request.data.decode())
-    assert body == {"temperature": 20.0, "timestamp": 5.0, "device": "balcony-pi"}
+    assert body == {"temperature": 20.0, "timestamp": iso(5.0),
+                    "device": "test-pi", "version": VERSION}
+
+
+def test_mqtt_payload_carries_metadata(fake_mqtt):
+    sink = MQTTSink({"host": "broker.local"}, SinkContext())
+    client = sink._client
+    client.on_connect(client, None, None, 0, None)
+
+    snapshot = snap(7.0)
+    snapshot.location = "balcony"
+    snapshot.time_uncertain = True
+    sink.publish(snapshot)
+    (payload,) = readings_payloads(client)
+    assert payload == {"temperature": 20.0, "timestamp": iso(7.0),
+                       "device": "test-pi", "location": "balcony",
+                       "version": VERSION, "time_uncertain": True}
+
+
+def test_prometheus_gains_device_and_location_labels():
+    from prometheus_client import CollectorRegistry
+
+    from pluto.sinks.prometheus import PrometheusSink
+
+    registry_ = CollectorRegistry()
+    sink = PrometheusSink({}, SinkContext(), registry=registry_, start_server=False)
+    snapshot = snap(1.0, temperature=21.5)
+    snapshot.location = "balcony"
+    snapshot.readings["pm25"] = Reading.ok(12.0, "µg/m³")
+    sink.publish(snapshot)
+
+    labels = {"device": "test-pi", "location": "balcony"}
+    assert registry_.get_sample_value("pluto_temperature_celsius", labels) == 21.5
+    assert registry_.get_sample_value(
+        "pluto_particulates_ug_per_m3", {**labels, "size": "2.5"}) == 12.0
+    # A metric with no reading reports NaN.
+    import math
+    assert math.isnan(registry_.get_sample_value("pluto_humidity_percent", labels))
 
 
 def test_http_sink_failure_is_buffered(tmp_path, monkeypatch):

@@ -4,10 +4,11 @@ import logging
 import time
 from typing import Optional
 
+from .config import DeviceConfig
 from .display import Renderer
 from .drivers import flatten, read_all
 from .drivers.base import Readings
-from .sinks.base import Snapshot
+from .model import Snapshot, make_snapshot
 
 log = logging.getLogger(__name__)
 
@@ -19,7 +20,7 @@ TAP_THRESHOLD = 1500
 
 class App:
     def __init__(self, drivers, display, renderer: Renderer, refresh: float = 1.0,
-                 cycle: float = 10.0, sinks=()):
+                 cycle: float = 10.0, sinks=(), device: Optional[DeviceConfig] = None):
         """cycle=0 disables auto page cycling (tap the proximity sensor to switch)."""
         self.drivers = list(drivers)
         self.display = display
@@ -27,6 +28,7 @@ class App:
         self.refresh = refresh
         self.cycle = cycle
         self.sinks = list(sinks)
+        self.device = device or DeviceConfig()
 
     def run(self) -> None:
         page = 0
@@ -45,7 +47,7 @@ class App:
                 now = time.monotonic()
 
                 if now - last_refresh >= self.refresh:
-                    snap = Snapshot(time.time(), read_all(self.drivers))
+                    snap = make_snapshot(read_all(self.drivers), self.device)
                     readings = flatten(snap.readings)
                     last_refresh = now
                     dirty = True
@@ -76,7 +78,7 @@ class App:
 
     def render_all_pages(self) -> None:
         """Render every page once with a single snapshot, then return."""
-        snap = Snapshot(time.time(), read_all(self.drivers))
+        snap = make_snapshot(read_all(self.drivers), self.device)
         readings = flatten(snap.readings)
         self._log_readings(readings)
         self._publish(snap)

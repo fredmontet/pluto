@@ -6,56 +6,18 @@ app loop hands every enabled sink the same Snapshot and one failing
 sink never affects the others or the display.
 """
 
-import json
 import socket
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, Optional, Set
 
 from ..config import DeviceConfig
-from ..drivers.base import Quality, Reading
+from ..model import Snapshot, json_payload  # noqa: F401 (re-exported)
 from ..plugins import Configurable
 
 
 class SinkError(RuntimeError):
     """A publish that could not be delivered (and may be retried)."""
-
-
-@dataclass
-class Snapshot:
-    """One timestamped set of merged driver readings."""
-
-    timestamp: float  # unix epoch seconds, taken at read time
-    readings: Dict[str, Reading]
-
-    def to_json(self) -> str:
-        return json.dumps({
-            "timestamp": self.timestamp,
-            "readings": {f: [r.value, r.unit, r.quality.value]
-                         for f, r in self.readings.items()},
-        })
-
-    @classmethod
-    def from_json(cls, text: str) -> "Snapshot":
-        doc = json.loads(text)
-        return cls(doc["timestamp"],
-                   {f: Reading(value, unit, Quality(quality))
-                    for f, (value, unit, quality) in doc["readings"].items()})
-
-
-def json_payload(snapshot: Snapshot) -> Dict[str, float]:
-    """The flat JSON document network sinks send: ok values + timestamp.
-
-    The timestamp is the snapshot's read time, so buffered snapshots
-    replayed after an outage keep their original time.
-    """
-    payload = {
-        f: round(r.value, 3)
-        for f, r in snapshot.readings.items()
-        if r.quality is Quality.OK and isinstance(r.value, (int, float))
-    }
-    payload["timestamp"] = round(snapshot.timestamp, 3)
-    return payload
 
 
 @dataclass

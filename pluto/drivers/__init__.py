@@ -87,14 +87,19 @@ def _enabled(cfg: SensorsConfig, name: str) -> bool:
 
 def read_all(drivers: Iterable[Driver]) -> Dict[str, Reading]:
     """One merged read across all drivers; a raising driver degrades to
-    ``error`` readings for its fields instead of taking the loop down."""
+    ``error`` readings for its fields instead of taking the loop down.
+    Every reading is stamped with its driver's name."""
     merged: Dict[str, Reading] = {}
     for driver in drivers:
         try:
-            merged.update(driver.read())
+            result = driver.read()
         except Exception:
             log.warning("Driver %s read() raised", driver.name, exc_info=True)
-            merged.update(driver.error_readings())
+            result = driver.error_readings()
+        for reading in result.values():
+            if not reading.driver:
+                reading.driver = driver.name
+        merged.update(result)
     return merged
 
 

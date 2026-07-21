@@ -25,11 +25,17 @@ class Quality(Enum):
 
 @dataclass
 class Reading:
-    """One value from one sensor field."""
+    """One value from one sensor field.
+
+    ``driver`` is stamped with the producing driver's name during the
+    merged read, so downstream storage can tell where a metric came
+    from without extra context.
+    """
 
     value: Optional[float]
     unit: str = ""
     quality: Quality = Quality.OK
+    driver: str = ""
 
     @classmethod
     def ok(cls, value: float, unit: str = "") -> "Reading":
@@ -99,7 +105,7 @@ class Readings:
     pm1: Optional[float] = None  # µg/m³
     pm25: Optional[float] = None  # µg/m³
     pm10: Optional[float] = None  # µg/m³
-    noise: Optional[float] = None  # relative amplitude
+    noise: Optional[float] = None  # dB relative to full scale (uncalibrated)
 
 
 def flatten(readings: Dict[str, Reading]) -> Readings:

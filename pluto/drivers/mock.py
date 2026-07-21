@@ -61,5 +61,5 @@ class MockDriver(Driver):
             readings["pm25"] = Reading.ok(max(0.0, self._wave(50, 3.0, 12.0, 1.0)), "µg/m³")
             readings["pm10"] = Reading.ok(max(0.0, self._wave(50, 5.0, 18.0, 2.0)), "µg/m³")
         if self._noise:
-            readings["noise"] = Reading.ok(max(0.0, self._wave(15, 0.1, 0.9)))
+            readings["noise"] = Reading.ok(self._wave(15, -35.0, -6.0), "dB")
         return readings

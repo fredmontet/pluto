@@ -1,4 +1,10 @@
-"""Prometheus sink: expose the latest snapshot on a /metrics endpoint."""
+"""Prometheus sink: expose the latest snapshot on a /metrics endpoint.
+
+Gauge names come from the metric catalogue (pluto/model.py); every
+series carries ``device`` and ``location`` labels from the snapshot
+metadata, and the particulate sizes share one gauge with a ``size``
+label.
+"""
 
 import logging
 import math
@@ -6,6 +12,7 @@ from typing import Any, Dict, Optional
 
 from .base import Sink, SinkContext, Snapshot
 from ..drivers.base import Quality
+from ..model import METRICS, PM_SIZES
 
 log = logging.getLogger(__name__)
 
@@ -17,32 +24,35 @@ class PrometheusSink(Sink):
     settings_keys = ("port",)
 
     def __init__(self, settings: Optional[Dict[str, Any]] = None,
-                 context: Optional[SinkContext] = None):
+                 context: Optional[SinkContext] = None,
+                 registry=None, start_server: bool = True):
+        """registry/start_server exist for tests: pass a private
+        CollectorRegistry and skip binding the HTTP port."""
         super().__init__(settings, context)
-        from prometheus_client import Gauge, start_http_server
+        import prometheus_client
+        from prometheus_client import Gauge
 
         port = self.int_setting("port", 9099, minimum=1, maximum=65535)
+        if registry is None:
+            registry = prometheus_client.REGISTRY
+        labels = ["device", "location"]
         self._gauges = {
-            "temperature": Gauge("pluto_temperature_celsius", "CPU-heat compensated temperature"),
-            "raw_temperature": Gauge("pluto_raw_temperature_celsius", "Uncompensated BME280 temperature"),
-            "humidity": Gauge("pluto_humidity_percent", "Relative humidity"),
-            "pressure": Gauge("pluto_pressure_hpa", "Barometric pressure"),
-            "lux": Gauge("pluto_light_lux", "Illuminance"),
-            "proximity": Gauge("pluto_proximity", "LTR559 proximity counts"),
-            "oxidising": Gauge("pluto_gas_oxidising_kohms", "MICS6814 oxidising gas resistance"),
-            "reducing": Gauge("pluto_gas_reducing_kohms", "MICS6814 reducing gas resistance"),
-            "nh3": Gauge("pluto_gas_nh3_kohms", "MICS6814 NH3 gas resistance"),
-            "noise": Gauge("pluto_noise_amplitude", "Relative noise amplitude"),
+            name: Gauge(metric.prometheus, metric.description, labels,
+                        registry=registry)
+            for name, metric in METRICS.items() if name not in PM_SIZES
         }
-        self._pm = Gauge("pluto_particulates_ug_per_m3", "Particulate matter", ["size"])
-        start_http_server(port)
-        log.info("Prometheus metrics on port %d at /metrics", port)
+        self._pm = Gauge("pluto_particulates_ug_per_m3", "Particulate matter",
+                         labels + ["size"], registry=registry)
+        if start_server:
+            prometheus_client.start_http_server(port, registry=registry)
+            log.info("Prometheus metrics on port %d at /metrics", port)
 
     def publish(self, snapshot: Snapshot) -> None:
+        labels = {"device": snapshot.device_id, "location": snapshot.location}
         for field, gauge in self._gauges.items():
-            gauge.set(self._value(snapshot, field))
-        for size, field in (("1.0", "pm1"), ("2.5", "pm25"), ("10", "pm10")):
-            self._pm.labels(size=size).set(self._value(snapshot, field))
+            gauge.labels(**labels).set(self._value(snapshot, field))
+        for field, size in PM_SIZES.items():
+            self._pm.labels(size=size, **labels).set(self._value(snapshot, field))
 
     @staticmethod
     def _value(snapshot: Snapshot, field: str) -> float:

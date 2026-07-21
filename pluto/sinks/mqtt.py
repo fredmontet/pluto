@@ -15,24 +15,9 @@ from typing import Any, Dict, Optional
 
 from .base import Sink, SinkContext, SinkError, Snapshot, json_payload
 from ..config import ConfigError
+from ..model import METRICS
 
 log = logging.getLogger(__name__)
-
-# field -> (friendly name, unit, Home Assistant device_class)
-_HA_SENSORS = {
-    "temperature": ("Temperature", "°C", "temperature"),
-    "humidity": ("Humidity", "%", "humidity"),
-    "pressure": ("Pressure", "hPa", "atmospheric_pressure"),
-    "lux": ("Light", "lx", "illuminance"),
-    "proximity": ("Proximity", None, None),
-    "oxidising": ("Gas oxidising", "kΩ", None),
-    "reducing": ("Gas reducing", "kΩ", None),
-    "nh3": ("Gas NH3", "kΩ", None),
-    "pm1": ("PM1.0", "µg/m³", "pm1"),
-    "pm25": ("PM2.5", "µg/m³", "pm25"),
-    "pm10": ("PM10", "µg/m³", "pm10"),
-    "noise": ("Noise amplitude", None, None),
-}
 
 
 class MQTTSink(Sink):
@@ -102,21 +87,21 @@ class MQTTSink(Sink):
         }
         if self._location:
             device["suggested_area"] = self._location
-        for field, (name, unit, device_class) in _HA_SENSORS.items():
+        for field, metric in METRICS.items():
             if self._fields is not None and field not in self._fields:
                 continue
             config = {
-                "name": name,
+                "name": metric.label,
                 "unique_id": f"pluto_{node}_{field}",
                 "state_topic": self._readings_topic,
                 "value_template": "{{ value_json.%s }}" % field,
                 "availability_topic": self._status_topic,
                 "device": device,
             }
-            if unit:
-                config["unit_of_measurement"] = unit
-            if device_class:
-                config["device_class"] = device_class
+            if metric.unit:
+                config["unit_of_measurement"] = metric.unit
+            if metric.device_class:
+                config["device_class"] = metric.device_class
             self._client.publish(
                 f"homeassistant/sensor/pluto_{node}/{field}/config",
                 json.dumps(config),

@@ -111,7 +111,7 @@ class Renderer:
         if self._has_particulates:
             cells.append(("PM2.5 " + _fmt(r.pm25, "{:.0f}"), COLORS["pm"]))
         elif self._has_noise:
-            cells.append(("Noise " + _fmt(r.noise, "{:.2f}"), COLORS["noise"]))
+            cells.append(("Noise " + _fmt(r.noise, "{:.0f}", "dB"), COLORS["noise"]))
         else:
             cells.append(("Prox " + _fmt(r.proximity, "{:.0f}"), COLORS["prox"]))
 
@@ -159,11 +159,12 @@ class Renderer:
         )
 
     def _page_noise(self, draw: ImageDraw.ImageDraw, r: Readings) -> None:
-        draw.text((4, 20), "Amplitude", font=self.font_small, fill=DIM)
-        draw.text((66, 18), _fmt(r.noise, "{:.2f}"), font=self.font_value, fill=COLORS["noise"])
+        draw.text((4, 20), "Level", font=self.font_small, fill=DIM)
+        draw.text((66, 18), _fmt(r.noise, "{:.1f}", " dB"), font=self.font_value, fill=COLORS["noise"])
         if r.noise is not None:
-            width = int(min(1.0, max(0.0, r.noise)) * (WIDTH - 8))
-            draw.rectangle((4, 50, 4 + width, 66), fill=COLORS["noise"])
+            # The level bar spans the -60 dB floor up to full scale (0 dB).
+            fraction = min(1.0, max(0.0, (r.noise + 60.0) / 60.0))
+            draw.rectangle((4, 50, 4 + int(fraction * (WIDTH - 8)), 66), fill=COLORS["noise"])
         draw.rectangle((4, 50, WIDTH - 4, 66), outline=(60, 60, 60))
 
 

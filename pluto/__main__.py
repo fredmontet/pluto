@@ -111,7 +111,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         has_noise="noise" in fields,
     )
     app = App(drivers, display, renderer, refresh=cfg.sensors.refresh,
-              cycle=cfg.outputs.display.cycle, sinks=sinks)
+              cycle=cfg.outputs.display.cycle, sinks=sinks, device=cfg.device)
 
     if args.once:
         app.render_all_pages()

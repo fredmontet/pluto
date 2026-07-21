@@ -1,9 +1,9 @@
 """HTTP sink: POST each snapshot as JSON to a configurable URL.
 
-The payload is the same flat document MQTT publishes, plus a "device"
-field identifying this Pi. Delivery failures raise, so the buffering
-wrapper queues the snapshot and replays it once the endpoint is
-reachable again.
+The payload is the same flat document MQTT publishes — metric values
+plus the snapshot metadata (device, location, version, UTC timestamp).
+Delivery failures raise, so the buffering wrapper queues the snapshot
+and replays it once the endpoint is reachable again.
 """
 
 import json
@@ -36,7 +36,6 @@ class HTTPSink(Sink):
 
     def publish(self, snapshot: Snapshot) -> None:
         payload = json_payload(snapshot)
-        payload["device"] = self.context.node
         headers = {"Content-Type": "application/json"}
         if self._token:
             headers["Authorization"] = f"Bearer {self._token}"
