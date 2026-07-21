@@ -89,15 +89,25 @@ aqi = false                # European Air Quality Index (1-6) from PM2.5/PM10
 
 # ── Outputs ─────────────────────────────────────────────────────────
 # One sub-table per sink. All of them can run at the same time, and a
-# failing sink never affects the others or the display. Unlike sensor
-# drivers, sinks only run when their table is declared here (or turned
-# on by a CLI flag) with enabled = true. Third-party sinks installed
-# via the `pluto.sinks` entry-point group are declared the same way.
+# failing sink never affects the others. Most sinks only run when their
+# table is declared here (or turned on by a CLI flag) with
+# enabled = true. Third-party sinks installed via the `pluto.sinks`
+# entry-point group are declared the same way.
 
-[outputs.display]
-enabled = true    # set to false to run headless (publish only, no LCD)
+# The Enviro+ LCD is just another sink. It is special only in that it
+# auto-detects: it runs whenever the display hardware is present, even
+# without a table here. Set enabled = false to force it off (a fully
+# headless deployment) or add a table to tune it.
+[outputs.lcd]
+enabled = true    # false = never use the LCD, even if one is attached
 cycle = 10.0      # seconds between automatic page changes, 0 to disable
                   # (CLI: --cycle)
+
+# The PNG sink renders every page to <dir>/page-N-<name>.png on each
+# refresh — the dev/screenshot companion to the LCD (CLI: --frames-dir).
+[outputs.png]
+enabled = false
+dir = "frames"
 
 [outputs.mqtt]
 enabled = false   # publish a JSON snapshot per refresh (CLI: --mqtt HOST)

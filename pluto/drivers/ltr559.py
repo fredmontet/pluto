@@ -35,10 +35,3 @@ class LTR559Driver(Driver):
         except Exception:
             log.warning("LTR559 read failed", exc_info=True)
             return self.error_readings()
-
-    def proximity(self) -> Optional[float]:
-        """Fast proximity-only read, polled between full refreshes."""
-        try:
-            return self._ltr559.get_proximity()
-        except Exception:
-            return None

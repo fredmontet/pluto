@@ -1,15 +1,17 @@
-"""Rendering for the Enviro+ 0.96" LCD (160x80, ST7735).
+"""Page rendering for the Enviro+ 0.96" LCD (160x80, ST7735).
 
-The Renderer draws pages as PIL images, independent of the output device,
-so the same frames can go to the real LCD or to PNG files in mock mode.
+The Renderer draws pages as PIL images, independent of the output
+device, so the same frames go to the real LCD (sinks/lcd.py) or to
+PNG files (sinks/png.py).
 """
 
 import logging
-from typing import Callable, List, Optional, Tuple
+from typing import Callable, Iterable, List, Optional, Tuple
 
 from PIL import Image, ImageDraw, ImageFont
 
 from .drivers.base import Readings
+from .model import DERIVED_METRICS
 
 log = logging.getLogger(__name__)
 
@@ -187,59 +189,11 @@ class Renderer:
         draw.rectangle((4, 50, WIDTH - 4, 66), outline=(60, 60, 60))
 
 
-class LCD:
-    """The Enviro+ onboard 0.96" ST7735 display."""
-
-    def __init__(self):
-        import st7735
-
-        self._disp = st7735.ST7735(
-            port=0,
-            cs=1,
-            dc="GPIO9",
-            backlight="GPIO12",
-            rotation=270,
-            spi_speed_hz=10_000_000,
-        )
-        self._disp.begin()
-
-    def show(self, image: Image.Image) -> None:
-        self._disp.display(image)
-
-    def close(self) -> None:
-        try:
-            self._disp.set_backlight(0)
-        except Exception:
-            pass
-
-
-class NullDisplay:
-    """No-op output device for headless runs (outputs.display.enabled = false)."""
-
-    def show(self, image: Image.Image) -> None:
-        pass
-
-    def close(self) -> None:
-        pass
-
-
-class ConsoleDisplay:
-    """Mock output device: optionally saves each frame as a PNG."""
-
-    def __init__(self, out_dir: Optional[str] = None):
-        self._out_dir = out_dir
-        self._count = 0
-        if out_dir:
-            import os
-
-            os.makedirs(out_dir, exist_ok=True)
-
-    def show(self, image: Image.Image) -> None:
-        self._count += 1
-        if self._out_dir:
-            path = f"{self._out_dir}/frame-{self._count:04d}.png"
-            image.save(path)
-            log.debug("Saved %s", path)
-
-    def close(self) -> None:
-        pass
+def renderer_for_fields(fields: Iterable[str]) -> Renderer:
+    """A Renderer whose page set matches the metrics actually flowing."""
+    fields = set(fields)
+    return Renderer(
+        has_particulates="pm25" in fields,
+        has_noise="noise" in fields,
+        derived=sorted(f for f in DERIVED_METRICS if f in fields),
+    )

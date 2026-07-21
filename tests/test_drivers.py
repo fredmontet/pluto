@@ -71,7 +71,7 @@ def test_mock_driver_reads_every_field_it_provides():
                for r in readings.values())
     assert readings["temperature"].unit == "°C"
     assert readings["pm25"].unit == "µg/m³"
-    assert driver.proximity() == 0.0
+    assert readings["proximity"].value == 0.0
 
 
 def test_mock_driver_settings_drop_fields():
@@ -219,12 +219,13 @@ def test_entry_point_cannot_shadow_builtin(monkeypatch):
 
 # ── End-to-end wiring ───────────────────────────────────────────────
 
-def test_app_renders_all_pages_from_the_mock_driver(tmp_path):
+def test_app_publishes_to_png_sink_from_the_mock_driver(tmp_path):
     from pluto.app import App
-    from pluto.display import ConsoleDisplay, Renderer
+    from pluto.sinks import SinkContext
+    from pluto.sinks.png import PNGSink
 
     drivers = load_drivers(sensors(), mock=True)
-    renderer = Renderer(has_particulates=True, has_noise=True)
-    app = App(drivers, ConsoleDisplay(out_dir=str(tmp_path)), renderer)
-    app.render_all_pages()
-    assert len(list(tmp_path.glob("*.png"))) == len(renderer.pages)
+    fields = provided_fields(drivers)
+    sink = PNGSink({"dir": str(tmp_path)}, SinkContext(fields=fields))
+    App(drivers, sinks=[sink]).run_once()
+    assert len(list(tmp_path.glob("*.png"))) == len(sink._renderer.pages)

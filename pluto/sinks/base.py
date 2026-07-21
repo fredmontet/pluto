@@ -39,11 +39,14 @@ class Sink(Configurable, ABC):
     and ``settings_keys``. ``buffered = True`` marks a network sink:
     the loader wraps it in the persistent store-and-forward queue, and
     its ``publish()`` must raise (e.g. SinkError) when delivery fails
-    so the snapshot stays queued.
+    so the snapshot stays queued. ``autoload = True`` lets a sink run
+    without being declared in config, gated by its ``available()``
+    probe (the LCD, which only runs when its hardware responds).
     """
 
     section = "outputs"
     buffered: bool = False
+    autoload: bool = False
     # Set by the buffering wrapper; a network sink may call it when
     # connectivity returns so the backlog is flushed immediately.
     notify_ready: Optional[Callable[[], None]] = None
@@ -52,6 +55,12 @@ class Sink(Configurable, ABC):
                  context: Optional[SinkContext] = None):
         super().__init__(settings)
         self.context = context or SinkContext()
+
+    def available(self) -> bool:
+        """Probe whatever the sink needs (hardware, ...); False keeps
+        it out of the loaded set. Only meaningful work for autoload
+        sinks — everything else defaults to True."""
+        return True
 
     @abstractmethod
     def publish(self, snapshot: Snapshot) -> None:

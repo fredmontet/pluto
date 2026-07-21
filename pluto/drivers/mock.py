@@ -35,9 +35,6 @@ class MockDriver(Driver):
     def available(self) -> bool:
         return True
 
-    def proximity(self) -> float:
-        return 0.0
-
     def _wave(self, period: float, lo: float, hi: float, phase: float = 0.0) -> float:
         t = time.monotonic() - self._t0
         mid, span = (lo + hi) / 2.0, (hi - lo) / 2.0

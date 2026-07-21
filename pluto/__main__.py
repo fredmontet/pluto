@@ -9,7 +9,6 @@ from typing import List, Optional
 from . import config as config_module
 from .app import App
 from .config import ConfigError
-from .display import Renderer
 from .drivers import load_drivers, provided_fields
 from .sinks import SinkContext, load_sinks
 from .transforms import build_pipeline
@@ -25,19 +24,19 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--config", metavar="PATH",
                         help="path to the TOML config file (default: ./pluto.toml if present)")
     parser.add_argument("--mock", action="store_true",
-                        help="run with simulated sensors and no LCD (for development off the Pi)")
+                        help="run with simulated sensors (for development off the Pi)")
     parser.add_argument("--refresh", type=float, metavar="SECONDS",
                         help="seconds between sensor reads (default: 1)")
     parser.add_argument("--cycle", type=float, metavar="SECONDS",
-                        help="seconds between automatic page changes, 0 to disable (default: 10)")
+                        help="seconds between automatic LCD page changes, 0 to disable (default: 10)")
     parser.add_argument("--no-pms", action="store_true",
                         help="skip the PMS5003 particulate sensor")
     parser.add_argument("--no-noise", action="store_true",
                         help="skip the microphone/noise sensor")
     parser.add_argument("--once", action="store_true",
-                        help="render every page once and exit (smoke test / screenshots)")
+                        help="read once, publish to every sink, and exit (smoke test)")
     parser.add_argument("--frames-dir", metavar="DIR",
-                        help="with --mock, save rendered frames as PNGs into DIR")
+                        help="enable the PNG sink, rendering each page into DIR")
     parser.add_argument("-v", "--verbose", action="store_true", help="debug logging")
 
     pub = parser.add_argument_group("publishing")
@@ -73,8 +72,10 @@ def main(argv: Optional[List[str]] = None) -> int:
         drivers = load_drivers(cfg.sensors, mock=args.mock)
         pipeline = build_pipeline(drivers, cfg.sensors, cfg.derived)
         fields = provided_fields(drivers) | pipeline.derived_fields
+        # The LCD only auto-detects on real hardware; --mock skips it
+        # so a dev box never tries to open /dev/spidev.
         sinks = load_sinks(cfg.outputs, SinkContext(device=cfg.device, fields=fields),
-                           cfg.buffer)
+                           cfg.buffer, autoload=not args.mock)
     except ConfigError as e:
         log.error("Configuration error: %s", e)
         return 2
@@ -84,41 +85,14 @@ def main(argv: Optional[List[str]] = None) -> int:
                  f" at {cfg.device.location}" if cfg.device.location else "")
     if not drivers:
         log.warning("No sensor drivers available; every reading will show as --")
+    if not sinks:
+        log.info("No output sinks active; running headless")
 
-    if args.mock:
-        from .display import ConsoleDisplay
-
-        display = ConsoleDisplay(out_dir=args.frames_dir)
-    else:
-        if cfg.outputs.display.enabled:
-            try:
-                from .display import LCD
-
-                display = LCD()
-            except Exception:
-                log.error(
-                    "Could not initialise the ST7735 LCD. Are you running on the Pi "
-                    "with SPI enabled (sudo raspi-config nonint do_spi 0)? "
-                    "Use --mock to run without hardware.",
-                    exc_info=True,
-                )
-                return 1
-        else:
-            from .display import NullDisplay
-
-            display = NullDisplay()
-
-    renderer = Renderer(
-        has_particulates="pm25" in fields,
-        has_noise="noise" in fields,
-        derived=sorted(pipeline.derived_fields),
-    )
-    app = App(drivers, display, renderer, refresh=cfg.sensors.refresh,
-              cycle=cfg.outputs.display.cycle, sinks=sinks, device=cfg.device,
-              pipeline=pipeline)
+    app = App(drivers, sinks=sinks, refresh=cfg.sensors.refresh,
+              device=cfg.device, pipeline=pipeline)
 
     if args.once:
-        app.render_all_pages()
+        app.run_once()
     else:
         app.run()
     return 0

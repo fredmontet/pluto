@@ -1,34 +1,30 @@
-"""Main loop: read drivers, handle page switching, draw frames."""
+"""Main loop: read drivers, transform, publish to sinks.
+
+The loop is now purely read-then-publish. Everything visual — page
+rendering, cycling and proximity-wave page switching — lives in the
+LCD sink (sinks/lcd.py), which subscribes to the same snapshots as
+every other sink. With no display attached the loop spends no cycles
+on rendering at all.
+"""
 
 import logging
 import time
 from typing import Optional
 
 from .config import DeviceConfig
-from .display import Renderer
 from .drivers import flatten, read_all
 from .drivers.base import Readings
-from .model import Snapshot, make_snapshot
+from .model import make_snapshot
 
 log = logging.getLogger(__name__)
 
-TICK = 0.1  # seconds between proximity/tap checks
-TAP_DEBOUNCE = 0.5
-# Proximity value above which we consider the sensor "tapped".
-TAP_THRESHOLD = 1500
-
 
 class App:
-    def __init__(self, drivers, display, renderer: Renderer, refresh: float = 1.0,
-                 cycle: float = 10.0, sinks=(), device: Optional[DeviceConfig] = None,
-                 pipeline=None):
-        """cycle=0 disables auto page cycling (tap the proximity sensor to switch)."""
+    def __init__(self, drivers, sinks=(), refresh: float = 1.0,
+                 device: Optional[DeviceConfig] = None, pipeline=None):
         self.drivers = list(drivers)
-        self.display = display
-        self.renderer = renderer
-        self.refresh = refresh
-        self.cycle = cycle
         self.sinks = list(sinks)
+        self.refresh = refresh
         self.device = device or DeviceConfig()
         self.pipeline = pipeline  # optional TransformPipeline
 
@@ -38,78 +34,39 @@ class App:
             readings = self.pipeline.apply(readings)
         return readings
 
-    def run(self) -> None:
-        page = 0
-        n_pages = len(self.renderer.pages)
-        readings = flatten(self._read())
-        last_refresh = time.monotonic()
-        last_cycle = last_refresh
-        last_tap = 0.0
-        dirty = True
-
-        log.info("Running with drivers: %s",
-                 ", ".join(d.name for d in self.drivers) or "(none)")
-        log.info("Running with pages: %s", ", ".join(name for name, _ in self.renderer.pages))
-        try:
-            while True:
-                now = time.monotonic()
-
-                if now - last_refresh >= self.refresh:
-                    snap = make_snapshot(self._read(), self.device)
-                    readings = flatten(snap.readings)
-                    last_refresh = now
-                    dirty = True
-                    self._log_readings(readings)
-                    self._publish(snap)
-
-                prox = self._proximity()
-                if prox is not None and prox > TAP_THRESHOLD and now - last_tap > TAP_DEBOUNCE:
-                    page = (page + 1) % n_pages
-                    last_tap = now
-                    last_cycle = now
-                    dirty = True
-
-                if self.cycle > 0 and now - last_cycle >= self.cycle:
-                    page = (page + 1) % n_pages
-                    last_cycle = now
-                    dirty = True
-
-                if dirty:
-                    self.display.show(self.renderer.render(page, readings))
-                    dirty = False
-
-                time.sleep(TICK)
-        except KeyboardInterrupt:
-            log.info("Exiting")
-        finally:
-            self._close()
-
-    def render_all_pages(self) -> None:
-        """Render every page once with a single snapshot, then return."""
+    def tick(self) -> None:
+        """Read once and publish the snapshot to every sink."""
         snap = make_snapshot(self._read(), self.device)
-        readings = flatten(snap.readings)
-        self._log_readings(readings)
-        self._publish(snap)
-        for i in range(len(self.renderer.pages)):
-            self.display.show(self.renderer.render(i, readings))
-        self._close()
-
-    def _proximity(self) -> Optional[float]:
-        for driver in self.drivers:
-            prox = driver.proximity()
-            if prox is not None:
-                return prox
-        return None
-
-    def _publish(self, snap: Snapshot) -> None:
+        self._log_readings(flatten(snap.readings))
         for sink in self.sinks:
             try:
                 sink.publish(snap)
             except Exception:
                 log.warning("%s sink failed", sink.name, exc_info=True)
 
-    def _close(self) -> None:
-        self.display.close()
+    def run(self) -> None:
+        log.info("Running with drivers: %s",
+                 ", ".join(d.name for d in self.drivers) or "(none)")
+        log.info("Publishing to sinks: %s",
+                 ", ".join(s.name for s in self.sinks) or "(none)")
+        try:
+            while True:
+                started = time.monotonic()
+                self.tick()
+                # Sleep out the rest of the interval; a slow read just
+                # shortens the wait rather than drifting the cadence.
+                time.sleep(max(0.0, self.refresh - (time.monotonic() - started)))
+        except KeyboardInterrupt:
+            log.info("Exiting")
+        finally:
+            self.close()
+
+    def run_once(self) -> None:
+        """One read/publish cycle, then shut down (smoke test)."""
+        self.tick()
+        self.close()
+
+    def close(self) -> None:
         for sink in self.sinks:
             try:
                 sink.close()

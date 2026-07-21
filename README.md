@@ -93,8 +93,8 @@ enabled = false           # skip the particulate sensor
 [sensors.microphone]
 interval = 5.0            # seconds between (blocking) mic samples
 
-[outputs.display]         # one sub-table per output sink
-enabled = true            # false = headless: publish without the LCD
+[outputs.lcd]             # the LCD is just a sink (auto-detected)
+enabled = true            # false = never use the LCD, even if attached
 cycle = 10.0              # seconds between page changes, 0 to disable
 
 [outputs.mqtt]
@@ -178,21 +178,22 @@ pluto [--config PATH] [--refresh SECONDS] [--cycle SECONDS]
 
 - `--config` — path to the TOML config file (default: `./pluto.toml` if present)
 - `--refresh` — seconds between sensor reads (default 1)
-- `--cycle` — seconds between automatic page changes, `0` to disable (default 10)
+- `--cycle` — seconds between automatic LCD page changes, `0` to disable (default 10)
 - `--no-pms` / `--no-noise` — skip the particulate sensor / microphone
-- `--once` — render each page once and exit (smoke test)
+- `--once` — read once, publish to every sink, and exit (smoke test)
+- `--frames-dir DIR` — enable the `png` sink, rendering each page into `DIR`
 
-Every flag except the run-mode ones (`--mock`, `--once`,
-`--frames-dir`, `-v`) has a config-file equivalent — see
-[Configuration](#configuration).
+Every flag except the run-mode ones (`--mock`, `--once`, `-v`) has a
+config-file equivalent — see [Configuration](#configuration).
 
 ## Publishing readings
 
-Besides the LCD, readings go to any number of output sinks: `mqtt`,
-`prometheus`, `sqlite`, `csv` and `http` are built in. A sink runs
-when its `[outputs.<sink>]` table is declared and enabled (or turned
-on by a CLI flag); all of them run at the same time, and a failing
-sink never affects the others or the display.
+Readings go to any number of output sinks: `lcd`, `png`, `mqtt`,
+`prometheus`, `sqlite`, `csv` and `http` are built in. The LCD is just
+one sink among them — it auto-detects (see [Headless mode](#headless-mode)),
+while the rest run when their `[outputs.<sink>]` table is declared and
+enabled (or turned on by a CLI flag). All of them run at the same
+time, and a failing sink never affects the others.
 
 Every sink emits the same self-describing data model: consistent
 metric names and units ([docs/metrics.md](docs/metrics.md) has the
@@ -315,6 +316,30 @@ mysink = "my_package:MySink"
 Once installed, `[outputs.mysink]` enables and configures it like any
 built-in sink.
 
+## Headless mode
+
+The Enviro+ LCD is not privileged — it is the `lcd` sink, and pluto
+runs perfectly with no display attached. The LCD is the one sink that
+*auto-detects*: it turns itself on only when the ST7735 panel actually
+responds at startup, so a board with no display (or a
+`pluto-on-a-server` reading a remote sensor) runs headless with zero
+display code in the loop and no wasted CPU on rendering — the read
+loop just reads and publishes.
+
+- **No display present** — nothing to configure. The LCD probe fails
+  quietly and the sink stays out of the loop.
+- **Force it off even when attached** — `[outputs.lcd] enabled = false`
+  (handy to save power, or when the panel is used by something else).
+- **Page cycling and the proximity wave** work exactly as before when
+  the LCD is active. Page switching now rides on the published
+  snapshots (the `proximity` reading) rather than the sink poking at
+  the LTR559 driver, and rendering happens on the sink's own thread so
+  a slow SPI write can't stall reads.
+
+The `png` sink is the LCD's off-Pi twin: it renders the same pages to
+image files for development and screenshots (`--frames-dir DIR`, or
+`[outputs.png]`).
+
 ## Developing off the Pi
 
 Mock mode needs no hardware drivers, so a plain `uv sync` (without the
@@ -322,8 +347,8 @@ Mock mode needs no hardware drivers, so a plain `uv sync` (without the
 
 ```bash
 uv sync
-uv run pluto --mock --once --frames-dir frames  # writes one PNG per page
-uv run pluto --mock -v                          # run the full loop
+uv run pluto --mock --once --frames-dir frames  # render each page to a PNG
+uv run pluto --mock -v                          # run the full loop, headless
 ```
 
 ## Project layout
@@ -331,17 +356,21 @@ uv run pluto --mock -v                          # run the full loop
 ```
 pluto/
 ├── __main__.py   # CLI entry point (python -m pluto)
-├── app.py        # main loop: read drivers → handle taps → draw → publish
+├── app.py        # main loop: read drivers → transform → publish to sinks
 ├── config.py     # pluto.toml loading, validation, CLI override merging
 ├── model.py      # Snapshot data model + the metric catalogue (docs/metrics.md)
+├── transforms.py # calibration, smoothing and derived metrics
 ├── plugins.py    # shared plugin plumbing (settings, entry points)
+├── display.py    # LCD page rendering (PIL), device-independent
 ├── drivers/      # sensor drivers: one module per chip, mock, plugin loading
 │   ├── base.py   # Driver ABC + Reading (value, unit, quality)
 │   └── ...       # bme280, ltr559, mics6814, pms5003, microphone, mock
-├── sinks/        # output sinks: mqtt, prometheus, sqlite, csv, http
-│   ├── base.py   # Sink ABC + Snapshot
-│   └── buffer.py # persistent store-and-forward queue for network sinks
-└── display.py    # page rendering (PIL) and output devices (LCD / PNG)
+└── sinks/        # output sinks (the LCD is one of them)
+    ├── base.py   # Sink ABC + Snapshot
+    ├── lcd.py    # Enviro+ ST7735 display (auto-detected)
+    ├── png.py    # render pages to PNG files (dev/screenshots)
+    ├── buffer.py # persistent store-and-forward queue for network sinks
+    └── ...       # mqtt, prometheus, sqlite, csv, http
 ```
 
 Run the tests with `uv run pytest`.

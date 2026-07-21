@@ -466,3 +466,180 @@ def test_http_sink_failure_is_buffered(tmp_path, monkeypatch):
     buffered.publish(snap(1.0))
     assert buffered.flush() is False
     assert queue.pending("http") == 1
+
+
+# ── LCD and PNG display sinks ───────────────────────────────────────
+
+class FakeST7735Device:
+    def __init__(self, **kwargs):
+        self.frames = []
+        self.backlight = None
+
+    def begin(self):
+        pass
+
+    def display(self, image):
+        self.frames.append(image)
+
+    def set_backlight(self, value):
+        self.backlight = value
+
+
+@pytest.fixture
+def fake_st7735(monkeypatch):
+    import types
+
+    module = types.ModuleType("st7735")
+    module.ST7735 = FakeST7735Device
+    monkeypatch.setitem(__import__("sys").modules, "st7735", module)
+    return module
+
+
+def prox_snap(seconds, proximity):
+    from pluto.model import make_snapshot
+    from pluto.config import DeviceConfig
+    s = snap(seconds)
+    s.readings["proximity"] = Reading.ok(proximity)
+    return s
+
+
+def make_lcd(clock):
+    """An LCD sink wired to a fake panel, worker thread not started."""
+    from pluto.sinks.lcd import LCDSink
+    sink = LCDSink({"cycle": 10.0}, SinkContext(), clock=clock)
+    sink._device = FakeST7735Device()
+    return sink
+
+
+def test_lcd_autodetects_when_hardware_present(tmp_path, fake_st7735):
+    sinks = load_sinks(outputs(), SinkContext(), buffer_cfg(tmp_path))
+    assert [s.name for s in sinks] == ["lcd"]
+    sinks[0].close()  # stop the worker thread
+    # available() opened and began the panel.
+    assert isinstance(sinks[0]._device, FakeST7735Device)
+
+
+def test_lcd_absent_hardware_loads_nothing(tmp_path):
+    # No st7735 module in this env: available() fails, nothing loads.
+    assert load_sinks(outputs(), SinkContext(), buffer_cfg(tmp_path)) == []
+
+
+def test_lcd_disabled_by_config_is_skipped(tmp_path, fake_st7735):
+    cfg = outputs({"lcd": {"enabled": False}})
+    assert load_sinks(cfg, SinkContext(), buffer_cfg(tmp_path)) == []
+
+
+def test_lcd_invalid_cycle_is_an_error(fake_st7735):
+    from pluto.sinks.lcd import LCDSink
+    with pytest.raises(ConfigError, match="cycle must be >= 0"):
+        LCDSink({"cycle": -1.0}, SinkContext())
+
+
+def test_lcd_draws_latest_snapshot():
+    now = [0.0]
+    lcd = make_lcd(lambda: now[0])
+    lcd.publish(snap(1.0))
+    lcd.step()
+    assert len(lcd._device.frames) == 1
+    # Nothing new: no redraw.
+    lcd.step()
+    assert len(lcd._device.frames) == 1
+
+
+def test_lcd_proximity_tap_switches_page():
+    now = [0.0]
+    lcd = make_lcd(lambda: now[0])
+    lcd.publish(snap(1.0))
+    lcd.step()
+    assert lcd._page == 0
+
+    now[0] = 1.0
+    lcd.publish(prox_snap(2.0, proximity=2000))  # a wave over the sensor
+    assert lcd._page == 1  # advanced immediately on publish
+    lcd.step()
+    assert len(lcd._device.frames) == 2
+
+
+def test_lcd_auto_cycles_pages():
+    now = [0.0]
+    lcd = make_lcd(lambda: now[0])
+    lcd.publish(snap(1.0))
+    lcd.step()
+    assert lcd._page == 0
+
+    now[0] = 10.0  # cycle interval elapsed
+    lcd.step()
+    assert lcd._page == 1
+
+
+def test_lcd_cycle_zero_disables_auto_cycling():
+    now = [0.0]
+    from pluto.sinks.lcd import LCDSink
+    lcd = LCDSink({"cycle": 0.0}, SinkContext(), clock=lambda: now[0])
+    lcd._device = FakeST7735Device()
+    lcd.publish(snap(1.0))
+    now[0] = 1000.0
+    assert lcd.step() is None  # no next-cycle deadline
+    assert lcd._page == 0
+
+
+def test_lcd_close_blanks_backlight(tmp_path, fake_st7735):
+    (lcd,) = load_sinks(outputs(), SinkContext(), buffer_cfg(tmp_path))
+    device = lcd._device
+    lcd.close()
+    assert device.backlight == 0
+
+
+def test_png_sink_renders_all_pages(tmp_path):
+    from pluto.sinks.png import PNGSink
+    sink = PNGSink({"dir": str(tmp_path)}, SinkContext(fields={"pm25", "noise"}))
+    sink.publish(snap(1.0))
+    files = sorted(p.name for p in tmp_path.glob("*.png"))
+    assert files == [f"page-{i + 1}-{n.lower()}.png"
+                     for i, (n, _) in enumerate(sink._renderer.pages)]
+    # A second publish overwrites rather than accumulating.
+    sink.publish(snap(2.0))
+    assert len(list(tmp_path.glob("*.png"))) == len(sink._renderer.pages)
+
+
+# ── App wiring: headless, LCD-only, LCD disabled ────────────────────
+
+def app_with(drivers=None, sinks=()):
+    from pluto.app import App
+    from pluto.drivers import load_drivers
+    if drivers is None:
+        drivers = load_drivers(config_module.SensorsConfig(), mock=True)
+    return App(drivers, sinks=sinks, refresh=0.01)
+
+
+def test_app_runs_headless_with_zero_sinks():
+    app = app_with(sinks=[])
+    app.run_once()  # must not raise, nothing to publish to
+
+
+def test_app_publishes_to_a_mocked_lcd_sink():
+    now = [0.0]
+    lcd = make_lcd(lambda: now[0])
+    app = app_with(sinks=[lcd])
+    app.run_once()
+    lcd.step()
+    assert lcd._readings is not None  # the snapshot reached the LCD
+    assert len(lcd._device.frames) == 1
+
+
+def test_app_with_lcd_disabled_by_config(tmp_path, fake_st7735):
+    cfg = outputs({"lcd": {"enabled": False},
+                   "sqlite": {"path": str(tmp_path / "d.db")}})
+    sinks = load_sinks(cfg, SinkContext(), buffer_cfg(tmp_path))
+    assert [s.name for s in sinks] == ["sqlite"]
+    app = app_with(sinks=sinks)
+    app.run_once()  # runs fine with no display
+
+
+def test_one_failing_sink_does_not_block_others():
+    good = RecordingSink()
+    bad = RecordingSink()
+    bad.fail = True
+    app = app_with(sinks=[bad, good])
+    app.tick()
+    assert len(good.published) == 1  # the failing sink was isolated

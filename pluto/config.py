@@ -55,12 +55,6 @@ class SensorsConfig:
 
 
 @dataclass
-class DisplayConfig:
-    enabled: bool = True
-    cycle: float = 10.0  # 0 disables automatic page cycling
-
-
-@dataclass
 class SinkConfig:
     """One ``[outputs.<sink>]`` table: an enabled flag plus whatever
     sink-specific settings the table carries. Settings are validated
@@ -72,7 +66,6 @@ class SinkConfig:
 
 @dataclass
 class OutputsConfig:
-    display: DisplayConfig = field(default_factory=DisplayConfig)
     sinks: Dict[str, SinkConfig] = field(default_factory=dict)
 
     def sink(self, name: str) -> SinkConfig:
@@ -169,21 +162,10 @@ def parse_config(data: Dict[str, Any]) -> Config:
 
     outputs = _table(data, "outputs")
 
-    display = _table(outputs, "display", "outputs")
-    _check_keys(display, ("enabled", "cycle"), "[outputs.display]")
-    cfg.outputs.display.enabled = _get(
-        display, "enabled", bool, cfg.outputs.display.enabled, "outputs.display")
-    cfg.outputs.display.cycle = _get(
-        display, "cycle", float, cfg.outputs.display.cycle, "outputs.display")
-    if cfg.outputs.display.cycle < 0:
-        raise ConfigError("outputs.display.cycle must be >= 0 (0 disables cycling)")
-
-    # Every other key is a [outputs.<sink>] table. Sink names and their
+    # Each key is a [outputs.<sink>] table. Sink names and their
     # settings are validated when the sinks are loaded, so entry-point
     # sinks unknown to this module still work.
     for name, table in outputs.items():
-        if name == "display":
-            continue
         if not isinstance(table, dict):
             raise ConfigError(
                 f"[outputs.{name}] must be a table of sink settings, "
@@ -226,7 +208,11 @@ def apply_cli_overrides(cfg: Config, args: Any) -> Config:
     if args.cycle is not None:
         if args.cycle < 0:
             raise ConfigError("--cycle must be >= 0 (0 disables cycling)")
-        cfg.outputs.display.cycle = args.cycle
+        cfg.outputs.sink("lcd").settings["cycle"] = args.cycle
+    if getattr(args, "frames_dir", None):
+        png = cfg.outputs.sink("png")
+        png.enabled = True
+        png.settings["dir"] = args.frames_dir
     if args.no_pms:
         cfg.sensors.driver("pms5003").enabled = False
     if args.no_noise:

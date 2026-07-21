@@ -20,10 +20,8 @@ def test_no_config_file_yields_defaults(tmp_path, monkeypatch):
     cfg = load_config()
     assert cfg == config.Config()
     assert cfg.sensors.refresh == 1.0
-    assert cfg.outputs.display.cycle == 10.0
     assert cfg.sensors.drivers == {}  # nothing declared: all auto-detected
-    assert cfg.outputs.sinks == {}  # no sinks declared: none run
-    assert cfg.outputs.display.enabled
+    assert cfg.outputs.sinks == {}  # nothing declared; LCD auto-detects at load
     assert cfg.buffer == config.BufferConfig()
 
 
@@ -72,7 +70,7 @@ def test_full_file(tmp_path):
         cpu_temp_compensation = 3.0
         offset = -0.5
 
-        [outputs.display]
+        [outputs.lcd]
         enabled = false
         cycle = 0
 
@@ -107,8 +105,7 @@ def test_full_file(tmp_path):
     assert cfg.sensors.drivers["bme280"].settings == {}
     assert cfg.sensors.drivers["bme280"].transforms == {
         "temperature": {"cpu_temp_compensation": 3.0, "offset": -0.5}}
-    assert not cfg.outputs.display.enabled
-    assert cfg.outputs.display.cycle == 0.0
+    assert cfg.outputs.sinks["lcd"] == config.SinkConfig(False, {"cycle": 0.0})
     m = cfg.outputs.sinks["mqtt"]
     assert m.enabled
     assert m.settings == {"host": "broker.local", "port": 8883,
@@ -123,7 +120,6 @@ def test_partial_file_keeps_other_defaults(tmp_path):
     cfg = load_config(write(tmp_path, "[outputs.mqtt]\nhost = \"b\"\n"))
     assert cfg.outputs.sinks == {"mqtt": config.SinkConfig(True, {"host": "b"})}
     assert cfg.sensors.refresh == 1.0
-    assert cfg.outputs.display.enabled
     assert cfg.buffer.enabled
 
 
@@ -139,7 +135,6 @@ def test_partial_file_keeps_other_defaults(tmp_path):
     ("[outputs]\nmqtt = 3\n", r"\[outputs.mqtt\] must be a table"),
     ("[outputs.mqtt]\nenabled = 1\n", "outputs.mqtt.enabled must be a bool"),
     ("[sensors]\nrefresh = 0\n", "sensors.refresh must be > 0"),
-    ("[outputs.display]\ncycle = -5\n", "outputs.display.cycle must be >= 0"),
     ("[buffer]\nmax_snapshots = 0\n", "buffer.max_snapshots must be >= 1"),
     ("[buffer]\npath = \"\"\n", "buffer.path must not be empty"),
     ("[buffer]\nsize = 3\n", r"unknown key\(s\) in \[buffer\]: size"),
@@ -158,17 +153,17 @@ def apply(argv, cfg=None):
 
 
 def test_no_flags_keep_file_values():
-    cfg = parse_config({"sensors": {"refresh": 7.0}, "outputs": {"display": {"cycle": 3.0}}})
+    cfg = parse_config({"sensors": {"refresh": 7.0}, "outputs": {"lcd": {"cycle": 3.0}}})
     cfg = apply([], cfg)
     assert cfg.sensors.refresh == 7.0
-    assert cfg.outputs.display.cycle == 3.0
+    assert cfg.outputs.sinks["lcd"].settings["cycle"] == 3.0
 
 
 def test_flags_override_file():
     cfg = parse_config({
         "sensors": {"refresh": 7.0, "pms5003": {"enabled": True}},
         "outputs": {
-            "display": {"cycle": 3.0},
+            "lcd": {"cycle": 3.0},
             "mqtt": {"enabled": True, "host": "file-broker", "port": 2000,
                      "topic": "file/topic"},
         },
@@ -179,7 +174,7 @@ def test_flags_override_file():
         "--prometheus", "9200",
     ], cfg)
     assert cfg.sensors.refresh == 0.5
-    assert cfg.outputs.display.cycle == 0.0
+    assert cfg.outputs.sinks["lcd"].settings["cycle"] == 0.0
     assert not cfg.sensors.drivers["pms5003"].enabled
     settings = cfg.outputs.sinks["mqtt"].settings
     assert settings["host"] == "cli-broker"
@@ -189,10 +184,19 @@ def test_flags_override_file():
     assert cfg.outputs.sinks["prometheus"].settings["port"] == 9200
 
 
+def test_cycle_flag_creates_lcd_sink_setting():
+    cfg = apply(["--cycle", "5"])
+    assert cfg.outputs.sinks["lcd"].settings == {"cycle": 5.0}
+
+
+def test_frames_dir_flag_enables_png_sink():
+    cfg = apply(["--frames-dir", "out"])
+    assert cfg.outputs.sinks["png"] == config.SinkConfig(True, {"dir": "out"})
+
+
 def test_no_flags_no_file_equals_legacy_defaults():
     cfg = apply([])
     assert cfg.sensors.refresh == 1.0
-    assert cfg.outputs.display.cycle == 10.0
     assert cfg.sensors.drivers == {}
     assert cfg.outputs.sinks == {}
 
@@ -253,7 +257,6 @@ def test_example_config_is_valid_and_matches_defaults():
     example = pathlib.Path(__file__).resolve().parent.parent / "pluto.example.toml"
     cfg = load_config(str(example))
     assert cfg.device == config.DeviceConfig()
-    assert cfg.outputs.display == config.DisplayConfig()
     assert cfg.buffer == config.BufferConfig()
     assert cfg.sensors.refresh == 1.0
     # The declared driver tables must spell out exactly the defaults.
@@ -266,8 +269,11 @@ def test_example_config_is_valid_and_matches_defaults():
         "microphone": config.DriverConfig(True, {"interval": 5.0}),
     }
     assert cfg.derived == config.DerivedConfig()  # all derived metrics off
-    # Every sink appears, disabled, with its default settings.
+    # Every sink appears with its default settings; the LCD is enabled
+    # (it auto-detects at load time), the rest are opt-in.
     assert cfg.outputs.sinks == {
+        "lcd": config.SinkConfig(True, {"cycle": 10.0}),
+        "png": config.SinkConfig(False, {"dir": "frames"}),
         "mqtt": config.SinkConfig(False, {
             "host": "", "port": 1883, "topic": "", "username": "",
             "password": "", "ha_discovery": False}),

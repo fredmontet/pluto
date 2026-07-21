@@ -23,12 +23,14 @@ ENTRY_POINT_GROUP = "pluto.sinks"
 def builtin_sinks() -> Dict[str, Type[Sink]]:
     from .csv import CSVSink
     from .http import HTTPSink
+    from .lcd import LCDSink
     from .mqtt import MQTTSink
+    from .png import PNGSink
     from .prometheus import PrometheusSink
     from .sqlite import SQLiteSink
 
     return {cls.name: cls for cls in (
-        MQTTSink, PrometheusSink, SQLiteSink, CSVSink, HTTPSink,
+        LCDSink, PNGSink, MQTTSink, PrometheusSink, SQLiteSink, CSVSink, HTTPSink,
     )}
 
 
@@ -42,12 +44,16 @@ def _entry_points():
 
 
 def load_sinks(outputs: OutputsConfig, context: SinkContext,
-               buffer_cfg: BufferConfig, start_workers: bool = True) -> List[Sink]:
-    """Instantiate every declared-and-enabled sink.
+               buffer_cfg: BufferConfig, start_workers: bool = True,
+               autoload: bool = True) -> List[Sink]:
+    """Instantiate every sink that should run.
 
+    Declared-and-enabled sinks always load; autoload sinks (the LCD)
+    additionally load undeclared, gated by their available() probe.
     Network sinks are wrapped in a BufferedSink sharing one on-disk
     SnapshotQueue (unless buffering is disabled in [buffer]).
-    ``start_workers=False`` keeps the retry threads off, for tests.
+    ``start_workers=False`` keeps the retry threads off, for tests;
+    ``autoload=False`` (mock mode) loads declared sinks only.
     """
     reg = registry()
     unknown = sorted(set(outputs.sinks) - set(reg))
@@ -56,14 +62,20 @@ def load_sinks(outputs: OutputsConfig, context: SinkContext,
             f"unknown output sink(s) in config: {', '.join(unknown)} "
             f"(known: {', '.join(sorted(reg))})")
 
+    names = set(outputs.sinks)
+    if autoload:
+        names |= {name for name, cls in reg.items() if cls.autoload}
+
     loaded: List[Sink] = []
     queue = None
-    for name in sorted(outputs.sinks):
-        scfg = outputs.sinks[name]
-        if not scfg.enabled:
+    for name in sorted(names):
+        scfg = outputs.sinks.get(name)
+        if scfg is not None and not scfg.enabled:
             log.info("Sink %s disabled in config", name)
             continue
-        sink = reg[name](dict(scfg.settings), context)
+        sink = reg[name](dict(scfg.settings) if scfg else {}, context)
+        if not sink.available():  # the sink logs the reason itself
+            continue
         if sink.buffered and buffer_cfg.enabled:
             if queue is None:
                 queue = SnapshotQueue(buffer_cfg.path, buffer_cfg.max_snapshots)

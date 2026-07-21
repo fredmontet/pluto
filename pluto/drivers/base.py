@@ -76,10 +76,6 @@ class Driver(Configurable, ABC):
     def read(self) -> Dict[str, Reading]:
         """Return a Reading for each field in ``provides``. Must not raise."""
 
-    def proximity(self) -> Optional[float]:
-        """Fast proximity poll for tap detection; None if unsupported."""
-        return None
-
     def close(self) -> None:
         pass
 
