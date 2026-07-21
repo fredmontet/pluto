@@ -1,15 +1,17 @@
-"""Rendering for the Enviro+ 0.96" LCD (160x80, ST7735).
+"""Page rendering for the Enviro+ 0.96" LCD (160x80, ST7735).
 
-The Renderer draws pages as PIL images, independent of the output device,
-so the same frames can go to the real LCD or to PNG files in mock mode.
+The Renderer draws pages as PIL images, independent of the output
+device, so the same frames go to the real LCD (sinks/lcd.py) or to
+PNG files (sinks/png.py).
 """
 
 import logging
-from typing import Callable, List, Optional, Tuple
+from typing import Callable, Iterable, List, Optional, Tuple
 
 from PIL import Image, ImageDraw, ImageFont
 
-from .sensors import Readings
+from .drivers.base import Readings
+from .model import DERIVED_METRICS
 
 log = logging.getLogger(__name__)
 
@@ -31,6 +33,9 @@ COLORS = {
     "nh3": (170, 110, 255),
     "pm": (180, 180, 180),
     "noise": (0, 220, 220),
+    "dew": (120, 190, 255),
+    "ah": (90, 220, 180),
+    "aqi": (255, 200, 90),
 }
 
 
@@ -55,7 +60,10 @@ def _fmt(value: Optional[float], spec: str = "{:.1f}", unit: str = "") -> str:
 class Renderer:
     """Builds one PIL frame per page from the latest readings."""
 
-    def __init__(self, has_particulates: bool = True, has_noise: bool = True):
+    def __init__(self, has_particulates: bool = True, has_noise: bool = True,
+                 derived=()):
+        """derived: names of enabled derived metrics (dew_point,
+        absolute_humidity, aqi); any of them adds an "Air" page."""
         self.font_small = _load_font(11)
         self.font_title = _load_font(12)
         self.font_value = _load_font(16)
@@ -70,6 +78,9 @@ class Renderer:
             self.pages.append(("Particles", self._page_particles))
         if has_noise:
             self.pages.append(("Noise", self._page_noise))
+        self._derived = set(derived)
+        if self._derived:
+            self.pages.append(("Air", self._page_air))
         self._has_particulates = has_particulates
         self._has_noise = has_noise
 
@@ -111,7 +122,7 @@ class Renderer:
         if self._has_particulates:
             cells.append(("PM2.5 " + _fmt(r.pm25, "{:.0f}"), COLORS["pm"]))
         elif self._has_noise:
-            cells.append(("Noise " + _fmt(r.noise, "{:.2f}"), COLORS["noise"]))
+            cells.append(("Noise " + _fmt(r.noise, "{:.0f}", "dB"), COLORS["noise"]))
         else:
             cells.append(("Prox " + _fmt(r.proximity, "{:.0f}"), COLORS["prox"]))
 
@@ -158,58 +169,31 @@ class Renderer:
             ],
         )
 
+    def _page_air(self, draw: ImageDraw.ImageDraw, r: Readings) -> None:
+        rows = []
+        if "dew_point" in self._derived:
+            rows.append(("Dew pt", _fmt(r.dew_point, "{:.1f}", " °C"), COLORS["dew"]))
+        if "absolute_humidity" in self._derived:
+            rows.append(("Abs hum", _fmt(r.absolute_humidity, "{:.1f}", " g/m3"), COLORS["ah"]))
+        if "aqi" in self._derived:
+            rows.append(("EAQI", _fmt(r.aqi, "{:.0f}", " / 6"), COLORS["aqi"]))
+        self._rows(draw, rows)
+
     def _page_noise(self, draw: ImageDraw.ImageDraw, r: Readings) -> None:
-        draw.text((4, 20), "Amplitude", font=self.font_small, fill=DIM)
-        draw.text((66, 18), _fmt(r.noise, "{:.2f}"), font=self.font_value, fill=COLORS["noise"])
+        draw.text((4, 20), "Level", font=self.font_small, fill=DIM)
+        draw.text((66, 18), _fmt(r.noise, "{:.1f}", " dB"), font=self.font_value, fill=COLORS["noise"])
         if r.noise is not None:
-            width = int(min(1.0, max(0.0, r.noise)) * (WIDTH - 8))
-            draw.rectangle((4, 50, 4 + width, 66), fill=COLORS["noise"])
+            # The level bar spans the -60 dB floor up to full scale (0 dB).
+            fraction = min(1.0, max(0.0, (r.noise + 60.0) / 60.0))
+            draw.rectangle((4, 50, 4 + int(fraction * (WIDTH - 8)), 66), fill=COLORS["noise"])
         draw.rectangle((4, 50, WIDTH - 4, 66), outline=(60, 60, 60))
 
 
-class LCD:
-    """The Enviro+ onboard 0.96" ST7735 display."""
-
-    def __init__(self):
-        import st7735
-
-        self._disp = st7735.ST7735(
-            port=0,
-            cs=1,
-            dc="GPIO9",
-            backlight="GPIO12",
-            rotation=270,
-            spi_speed_hz=10_000_000,
-        )
-        self._disp.begin()
-
-    def show(self, image: Image.Image) -> None:
-        self._disp.display(image)
-
-    def close(self) -> None:
-        try:
-            self._disp.set_backlight(0)
-        except Exception:
-            pass
-
-
-class ConsoleDisplay:
-    """Mock output device: optionally saves each frame as a PNG."""
-
-    def __init__(self, out_dir: Optional[str] = None):
-        self._out_dir = out_dir
-        self._count = 0
-        if out_dir:
-            import os
-
-            os.makedirs(out_dir, exist_ok=True)
-
-    def show(self, image: Image.Image) -> None:
-        self._count += 1
-        if self._out_dir:
-            path = f"{self._out_dir}/frame-{self._count:04d}.png"
-            image.save(path)
-            log.debug("Saved %s", path)
-
-    def close(self) -> None:
-        pass
+def renderer_for_fields(fields: Iterable[str]) -> Renderer:
+    """A Renderer whose page set matches the metrics actually flowing."""
+    fields = set(fields)
+    return Renderer(
+        has_particulates="pm25" in fields,
+        has_noise="noise" in fields,
+        derived=sorted(f for f in DERIVED_METRICS if f in fields),
+    )

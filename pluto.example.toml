@@ -1,0 +1,154 @@
+# Example configuration for pluto.
+#
+# Copy this file to `pluto.toml` in the directory you run pluto from
+# (the repo root when using the systemd unit), or point pluto at it
+# explicitly:
+#
+#     uv run pluto --config /path/to/pluto.toml
+#
+# Every option is shown with its default value, so an empty file — or
+# no file at all — behaves exactly like running pluto with no flags.
+# CLI flags always take precedence over this file.
+
+
+# ── Device ──────────────────────────────────────────────────────────
+# Identity of this particular Pi. Purely descriptive, except that `id`
+# (when set) replaces the hostname in the default MQTT topic, MQTT
+# client id and Home Assistant device name, and `location` is passed
+# to Home Assistant as the suggested area.
+
+[device]
+id = ""           # default: the Pi's hostname
+location = ""     # e.g. "living-room"
+description = ""  # free-form notes, not used by pluto itself
+
+
+# ── Sensors ─────────────────────────────────────────────────────────
+# One [sensors.<driver>] table per driver. Built-in drivers are
+# auto-detected: they load whenever their hardware responds, so these
+# tables are only needed to disable one (enabled = false) or change a
+# setting. Third-party drivers installed via the `pluto.drivers`
+# entry-point group are declared and configured the same way; an
+# unknown driver name is an error.
+
+[sensors]
+refresh = 1.0     # seconds between sensor reads (CLI: --refresh)
+
+[sensors.bme280]      # temperature / humidity / pressure
+enabled = true
+
+# ── Calibration / transforms ────────────────────────────────────────
+# Any metric can carry a [sensors.<driver>.<metric>] table with:
+#   scale  = 1.0   # value is multiplied by scale ...
+#   offset = 0.0   # ... then offset is added
+#   smooth = 1     # moving average over the last N samples (1 = off)
+# The BME280 temperature additionally supports cpu_temp_compensation,
+# the CPU-heat correction (higher = weaker, 0 disables it);
+# raw_temperature always stays untouched.
+
+[sensors.bme280.temperature]
+cpu_temp_compensation = 2.25
+#offset = -0.5        # example: this unit reads 0.5 °C warm
+#smooth = 5           # example: average the last 5 samples
+
+#[sensors.bme280.humidity]
+#offset = 3.0         # example: calibrate against a reference hygrometer
+
+[sensors.ltr559]      # light / proximity (also drives tap-to-switch-page)
+enabled = true
+
+[sensors.mics6814]    # oxidising / reducing / NH3 gas
+enabled = true
+
+[sensors.pms5003]     # particulates (CLI: --no-pms to disable)
+enabled = true
+
+[sensors.microphone]  # noise level (CLI: --no-noise to disable)
+enabled = true
+interval = 5.0        # seconds between mic samples; reading the mic
+                      # blocks, so it runs less often than the rest
+
+# The mock driver replaces the hardware with drifting fake values. It
+# is never auto-detected: it loads with --mock, or when declared here.
+#[sensors.mock]
+#enabled = true
+#pms = true       # include fake particulate readings
+#noise = true     # include a fake noise level
+
+
+# ── Derived metrics ─────────────────────────────────────────────────
+# Computed from the (calibrated) sensor values by the transform
+# pipeline; they reach the LCD and every sink like native metrics.
+# Formulas and the EAQI bands are documented in docs/metrics.md.
+
+[derived]
+dew_point = false          # °C, from temperature + humidity
+absolute_humidity = false  # g/m³, from temperature + humidity
+aqi = false                # European Air Quality Index (1-6) from PM2.5/PM10
+
+
+# ── Outputs ─────────────────────────────────────────────────────────
+# One sub-table per sink. All of them can run at the same time, and a
+# failing sink never affects the others. Most sinks only run when their
+# table is declared here (or turned on by a CLI flag) with
+# enabled = true. Third-party sinks installed via the `pluto.sinks`
+# entry-point group are declared the same way.
+
+# The Enviro+ LCD is just another sink. It is special only in that it
+# auto-detects: it runs whenever the display hardware is present, even
+# without a table here. Set enabled = false to force it off (a fully
+# headless deployment) or add a table to tune it.
+[outputs.lcd]
+enabled = true    # false = never use the LCD, even if one is attached
+cycle = 10.0      # seconds between automatic page changes, 0 to disable
+                  # (CLI: --cycle)
+
+# The PNG sink renders every page to <dir>/page-N-<name>.png on each
+# refresh — the dev/screenshot companion to the LCD (CLI: --frames-dir).
+[outputs.png]
+enabled = false
+dir = "frames"
+
+[outputs.mqtt]
+enabled = false   # publish a JSON snapshot per refresh (CLI: --mqtt HOST)
+host = ""         # broker hostname or IP; required when enabled
+port = 1883       # (CLI: --mqtt-port)
+topic = ""        # base topic; default: pluto/<device id or hostname>
+                  # (CLI: --mqtt-topic)
+username = ""     # (CLI: --mqtt-user)
+password = ""     # (CLI: --mqtt-password or PLUTO_MQTT_PASSWORD; prefer
+                  # the environment variable over storing it here)
+ha_discovery = false  # announce sensors via Home Assistant MQTT
+                      # discovery (CLI: --ha-discovery)
+
+[outputs.prometheus]
+enabled = false   # expose /metrics for Prometheus (CLI: --prometheus PORT)
+port = 9099
+
+[outputs.sqlite]
+enabled = false   # append every snapshot to a local SQLite database
+path = "pluto-readings.db"
+max_rows = 100000 # prune the oldest rows beyond this many; 0 = keep all
+
+[outputs.csv]
+enabled = false   # one CSV file per day: <dir>/pluto-YYYY-MM-DD.csv
+dir = "csv"
+
+[outputs.http]
+enabled = false   # POST each snapshot as JSON
+url = ""          # required when enabled, e.g. "https://example.com/ingest"
+token = ""        # optional; sent as "Authorization: Bearer <token>"
+timeout = 10.0    # seconds per request
+
+
+# ── Buffering ───────────────────────────────────────────────────────
+# Store-and-forward queue for the network sinks (mqtt, http). While
+# the network is down, snapshots pile up in this SQLite file and are
+# replayed in order (with their original timestamps, retrying with
+# exponential backoff) once the connection returns — nothing is lost
+# across restarts or power cuts either.
+
+[buffer]
+enabled = true
+path = "pluto-buffer.db"
+max_snapshots = 10000  # per sink; beyond this the oldest are dropped

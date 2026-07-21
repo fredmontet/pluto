@@ -3,3 +3,9 @@ __pycache__/
 .venv/
 venv/
 frames/
+# Local device configuration (copy pluto.example.toml to create one)
+pluto.toml
+# Runtime data written by the sinks and the offline buffer
+pluto-buffer.db
+pluto-readings.db
+csv/

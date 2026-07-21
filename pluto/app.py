@@ -1,92 +1,80 @@
-"""Main loop: read sensors, handle page switching, draw frames."""
+"""Main loop: read drivers, transform, publish to sinks.
+
+The loop is now purely read-then-publish. Everything visual — page
+rendering, cycling and proximity-wave page switching — lives in the
+LCD sink (sinks/lcd.py), which subscribes to the same snapshots as
+every other sink. With no display attached the loop spends no cycles
+on rendering at all.
+"""
 
 import logging
 import time
+from typing import Optional
 
-from .display import Renderer
-from .sensors import TAP_THRESHOLD, Readings
+from .config import DeviceConfig
+from .drivers import flatten, read_all
+from .drivers.base import Readings
+from .model import make_snapshot
 
 log = logging.getLogger(__name__)
 
-TICK = 0.1  # seconds between proximity/tap checks
-TAP_DEBOUNCE = 0.5
-
 
 class App:
-    def __init__(self, sensors, display, renderer: Renderer, refresh: float = 1.0, cycle: float = 10.0,
-                 publishers=()):
-        """cycle=0 disables auto page cycling (tap the proximity sensor to switch)."""
-        self.sensors = sensors
-        self.display = display
-        self.renderer = renderer
+    def __init__(self, drivers, sinks=(), refresh: float = 1.0,
+                 device: Optional[DeviceConfig] = None, pipeline=None):
+        self.drivers = list(drivers)
+        self.sinks = list(sinks)
         self.refresh = refresh
-        self.cycle = cycle
-        self.publishers = list(publishers)
+        self.device = device or DeviceConfig()
+        self.pipeline = pipeline  # optional TransformPipeline
+
+    def _read(self):
+        readings = read_all(self.drivers)
+        if self.pipeline is not None:
+            readings = self.pipeline.apply(readings)
+        return readings
+
+    def tick(self) -> None:
+        """Read once and publish the snapshot to every sink."""
+        snap = make_snapshot(self._read(), self.device)
+        self._log_readings(flatten(snap.readings))
+        for sink in self.sinks:
+            try:
+                sink.publish(snap)
+            except Exception:
+                log.warning("%s sink failed", sink.name, exc_info=True)
 
     def run(self) -> None:
-        page = 0
-        n_pages = len(self.renderer.pages)
-        readings = self.sensors.read()
-        last_refresh = time.monotonic()
-        last_cycle = last_refresh
-        last_tap = 0.0
-        dirty = True
-
-        log.info("Running with pages: %s", ", ".join(name for name, _ in self.renderer.pages))
+        log.info("Running with drivers: %s",
+                 ", ".join(d.name for d in self.drivers) or "(none)")
+        log.info("Publishing to sinks: %s",
+                 ", ".join(s.name for s in self.sinks) or "(none)")
         try:
             while True:
-                now = time.monotonic()
-
-                if now - last_refresh >= self.refresh:
-                    readings = self.sensors.read()
-                    last_refresh = now
-                    dirty = True
-                    self._log_readings(readings)
-                    self._publish(readings)
-
-                prox = self.sensors.proximity()
-                if prox is not None and prox > TAP_THRESHOLD and now - last_tap > TAP_DEBOUNCE:
-                    page = (page + 1) % n_pages
-                    last_tap = now
-                    last_cycle = now
-                    dirty = True
-
-                if self.cycle > 0 and now - last_cycle >= self.cycle:
-                    page = (page + 1) % n_pages
-                    last_cycle = now
-                    dirty = True
-
-                if dirty:
-                    self.display.show(self.renderer.render(page, readings))
-                    dirty = False
-
-                time.sleep(TICK)
+                started = time.monotonic()
+                self.tick()
+                # Sleep out the rest of the interval; a slow read just
+                # shortens the wait rather than drifting the cadence.
+                time.sleep(max(0.0, self.refresh - (time.monotonic() - started)))
         except KeyboardInterrupt:
             log.info("Exiting")
         finally:
-            self._close()
+            self.close()
 
-    def render_all_pages(self) -> None:
-        """Render every page once with a single snapshot, then return."""
-        readings = self.sensors.read()
-        self._log_readings(readings)
-        self._publish(readings)
-        for i in range(len(self.renderer.pages)):
-            self.display.show(self.renderer.render(i, readings))
-        self._close()
+    def run_once(self) -> None:
+        """One read/publish cycle, then shut down (smoke test)."""
+        self.tick()
+        self.close()
 
-    def _publish(self, readings: Readings) -> None:
-        for publisher in self.publishers:
+    def close(self) -> None:
+        for sink in self.sinks:
             try:
-                publisher.publish(readings)
+                sink.close()
             except Exception:
-                log.warning("%s failed", type(publisher).__name__, exc_info=True)
-
-    def _close(self) -> None:
-        self.display.close()
-        for publisher in self.publishers:
+                pass
+        for driver in self.drivers:
             try:
-                publisher.close()
+                driver.close()
             except Exception:
                 pass
 

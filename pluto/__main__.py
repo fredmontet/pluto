@@ -4,36 +4,45 @@ import argparse
 import logging
 import os
 import sys
+from typing import List, Optional
 
+from . import config as config_module
 from .app import App
-from .display import Renderer
+from .config import ConfigError
+from .drivers import load_drivers, provided_fields
+from .sinks import SinkContext, load_sinks
+from .transforms import build_pipeline
 
 
-def main() -> int:
+def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="pluto",
         description="Show all Enviro+ sensor values on its LCD.",
     )
+    # Value flags default to None so a flag that was actually given can
+    # be told apart from its default and override the config file.
+    parser.add_argument("--config", metavar="PATH",
+                        help="path to the TOML config file (default: ./pluto.toml if present)")
     parser.add_argument("--mock", action="store_true",
-                        help="run with simulated sensors and no LCD (for development off the Pi)")
-    parser.add_argument("--refresh", type=float, default=1.0,
+                        help="run with simulated sensors (for development off the Pi)")
+    parser.add_argument("--refresh", type=float, metavar="SECONDS",
                         help="seconds between sensor reads (default: 1)")
-    parser.add_argument("--cycle", type=float, default=10.0,
-                        help="seconds between automatic page changes, 0 to disable (default: 10)")
+    parser.add_argument("--cycle", type=float, metavar="SECONDS",
+                        help="seconds between automatic LCD page changes, 0 to disable (default: 10)")
     parser.add_argument("--no-pms", action="store_true",
                         help="skip the PMS5003 particulate sensor")
     parser.add_argument("--no-noise", action="store_true",
                         help="skip the microphone/noise sensor")
     parser.add_argument("--once", action="store_true",
-                        help="render every page once and exit (smoke test / screenshots)")
+                        help="read once, publish to every sink, and exit (smoke test)")
     parser.add_argument("--frames-dir", metavar="DIR",
-                        help="with --mock, save rendered frames as PNGs into DIR")
+                        help="enable the PNG sink, rendering each page into DIR")
     parser.add_argument("-v", "--verbose", action="store_true", help="debug logging")
 
     pub = parser.add_argument_group("publishing")
     pub.add_argument("--mqtt", metavar="HOST",
                      help="publish readings as JSON to this MQTT broker")
-    pub.add_argument("--mqtt-port", type=int, default=1883, metavar="PORT",
+    pub.add_argument("--mqtt-port", type=int, metavar="PORT",
                      help="MQTT broker port (default: 1883)")
     pub.add_argument("--mqtt-topic", metavar="TOPIC",
                      help="base MQTT topic (default: pluto/<hostname>)")
@@ -45,8 +54,11 @@ def main() -> int:
                      help="announce the sensors to Home Assistant via MQTT discovery")
     pub.add_argument("--prometheus", type=int, metavar="PORT",
                      help="expose Prometheus metrics on this port at /metrics")
+    return parser
 
-    args = parser.parse_args()
+
+def main(argv: Optional[List[str]] = None) -> int:
+    args = build_parser().parse_args(argv)
 
     logging.basicConfig(
         level=logging.DEBUG if args.verbose else logging.INFO,
@@ -54,57 +66,33 @@ def main() -> int:
     )
     log = logging.getLogger("pluto")
 
-    if args.mock:
-        from .display import ConsoleDisplay
-        from .sensors import MockSensors
+    try:
+        cfg = config_module.load_config(args.config)
+        cfg = config_module.apply_cli_overrides(cfg, args)
+        drivers = load_drivers(cfg.sensors, mock=args.mock)
+        pipeline = build_pipeline(drivers, cfg.sensors, cfg.derived)
+        fields = provided_fields(drivers) | pipeline.derived_fields
+        # The LCD only auto-detects on real hardware; --mock skips it
+        # so a dev box never tries to open /dev/spidev.
+        sinks = load_sinks(cfg.outputs, SinkContext(device=cfg.device, fields=fields),
+                           cfg.buffer, autoload=not args.mock)
+    except ConfigError as e:
+        log.error("Configuration error: %s", e)
+        return 2
 
-        sensors = MockSensors(enable_pms=not args.no_pms, enable_noise=not args.no_noise)
-        display = ConsoleDisplay(out_dir=args.frames_dir)
-    else:
-        from .sensors import EnviroSensors
+    if cfg.device.id or cfg.device.location:
+        log.info("Device %s%s", cfg.device.id or "(unnamed)",
+                 f" at {cfg.device.location}" if cfg.device.location else "")
+    if not drivers:
+        log.warning("No sensor drivers available; every reading will show as --")
+    if not sinks:
+        log.info("No output sinks active; running headless")
 
-        sensors = EnviroSensors(enable_pms=not args.no_pms, enable_noise=not args.no_noise)
-        try:
-            from .display import LCD
-
-            display = LCD()
-        except Exception:
-            log.error(
-                "Could not initialise the ST7735 LCD. Are you running on the Pi "
-                "with SPI enabled (sudo raspi-config nonint do_spi 0)? "
-                "Use --mock to run without hardware.",
-                exc_info=True,
-            )
-            return 1
-
-    publishers = []
-    if args.mqtt:
-        from .publish import MQTTPublisher
-
-        publishers.append(MQTTPublisher(
-            host=args.mqtt,
-            port=args.mqtt_port,
-            base_topic=args.mqtt_topic,
-            username=args.mqtt_user,
-            password=args.mqtt_password,
-            ha_discovery=args.ha_discovery,
-            has_particulates=sensors.has_particulates,
-            has_noise=sensors.has_noise,
-        ))
-    if args.prometheus:
-        from .publish import PrometheusExporter
-
-        publishers.append(PrometheusExporter(port=args.prometheus))
-
-    renderer = Renderer(
-        has_particulates=sensors.has_particulates,
-        has_noise=sensors.has_noise,
-    )
-    app = App(sensors, display, renderer, refresh=args.refresh, cycle=args.cycle,
-              publishers=publishers)
+    app = App(drivers, sinks=sinks, refresh=cfg.sensors.refresh,
+              device=cfg.device, pipeline=pipeline)
 
     if args.once:
-        app.render_all_pages()
+        app.run_once()
     else:
         app.run()
     return 0
