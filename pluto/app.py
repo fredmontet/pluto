@@ -20,7 +20,8 @@ TAP_THRESHOLD = 1500
 
 class App:
     def __init__(self, drivers, display, renderer: Renderer, refresh: float = 1.0,
-                 cycle: float = 10.0, sinks=(), device: Optional[DeviceConfig] = None):
+                 cycle: float = 10.0, sinks=(), device: Optional[DeviceConfig] = None,
+                 pipeline=None):
         """cycle=0 disables auto page cycling (tap the proximity sensor to switch)."""
         self.drivers = list(drivers)
         self.display = display
@@ -29,11 +30,18 @@ class App:
         self.cycle = cycle
         self.sinks = list(sinks)
         self.device = device or DeviceConfig()
+        self.pipeline = pipeline  # optional TransformPipeline
+
+    def _read(self):
+        readings = read_all(self.drivers)
+        if self.pipeline is not None:
+            readings = self.pipeline.apply(readings)
+        return readings
 
     def run(self) -> None:
         page = 0
         n_pages = len(self.renderer.pages)
-        readings = flatten(read_all(self.drivers))
+        readings = flatten(self._read())
         last_refresh = time.monotonic()
         last_cycle = last_refresh
         last_tap = 0.0
@@ -47,7 +55,7 @@ class App:
                 now = time.monotonic()
 
                 if now - last_refresh >= self.refresh:
-                    snap = make_snapshot(read_all(self.drivers), self.device)
+                    snap = make_snapshot(self._read(), self.device)
                     readings = flatten(snap.readings)
                     last_refresh = now
                     dirty = True
@@ -78,7 +86,7 @@ class App:
 
     def render_all_pages(self) -> None:
         """Render every page once with a single snapshot, then return."""
-        snap = make_snapshot(read_all(self.drivers), self.device)
+        snap = make_snapshot(self._read(), self.device)
         readings = flatten(snap.readings)
         self._log_readings(readings)
         self._publish(snap)

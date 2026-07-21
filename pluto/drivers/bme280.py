@@ -1,7 +1,14 @@
-"""BME280 driver: temperature, humidity, pressure."""
+"""BME280 driver: temperature, humidity, pressure.
+
+The sensor sits right next to the Pi's SoC and reads warm, so the
+``temperature`` metric carries a default ``cpu_temp_compensation``
+transform (see pluto/transforms.py) — tune or disable it with a
+``[sensors.bme280.temperature]`` table. ``raw_temperature`` is always
+the untouched sensor value.
+"""
 
 import logging
-from typing import Any, Dict, Optional
+from typing import Dict
 
 from .base import Driver, Reading
 
@@ -9,23 +16,13 @@ log = logging.getLogger(__name__)
 
 
 class BME280Driver(Driver):
-    """BME280 with the usual Pimoroni CPU-heat compensation.
-
-    The sensor sits right next to the Pi's SoC and reads warm, so the
-    reported temperature subtracts a fraction of the (smoothed) CPU
-    temperature. ``comp_factor`` tunes that fraction: higher values
-    mean weaker compensation.
-    """
-
     name = "bme280"
     provides = ("temperature", "raw_temperature", "humidity", "pressure")
-    settings_keys = ("comp_factor",)
+    default_transforms = {"temperature": {"cpu_temp_compensation": 2.25}}
 
-    def __init__(self, settings: Optional[Dict[str, Any]] = None):
+    def __init__(self, settings=None):
         super().__init__(settings)
-        self._comp_factor = self.float_setting("comp_factor", 2.25, positive=True)
         self._bme280 = None
-        self._cpu_temps = []
 
     def available(self) -> bool:
         try:
@@ -38,7 +35,6 @@ class BME280Driver(Driver):
         except Exception:
             log.warning("BME280 (temperature/humidity/pressure) unavailable", exc_info=True)
             return False
-        self._cpu_temps = [self._cpu_temp() or 50.0] * 5
         return True
 
     def read(self) -> Dict[str, Reading]:
@@ -46,26 +42,10 @@ class BME280Driver(Driver):
             raw = self._bme280.get_temperature()
             return {
                 "raw_temperature": Reading.ok(raw, "°C"),
-                "temperature": Reading.ok(self._compensate(raw), "°C"),
+                "temperature": Reading.ok(raw, "°C"),
                 "pressure": Reading.ok(self._bme280.get_pressure(), "hPa"),
                 "humidity": Reading.ok(self._bme280.get_humidity(), "%"),
             }
         except Exception:
             log.warning("BME280 read failed", exc_info=True)
             return self.error_readings()
-
-    @staticmethod
-    def _cpu_temp() -> Optional[float]:
-        try:
-            with open("/sys/class/thermal/thermal_zone0/temp") as f:
-                return int(f.read()) / 1000.0
-        except (OSError, ValueError):
-            return None
-
-    def _compensate(self, raw: float) -> float:
-        cpu = self._cpu_temp()
-        if cpu is None:
-            return raw
-        self._cpu_temps = self._cpu_temps[1:] + [cpu]
-        avg_cpu = sum(self._cpu_temps) / len(self._cpu_temps)
-        return raw - ((avg_cpu - raw) / self._comp_factor)

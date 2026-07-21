@@ -63,6 +63,10 @@ class Driver(Configurable, ABC):
     section = "sensors"
     provides: Tuple[str, ...] = ()
     autoload: bool = True
+    # Per-metric transform specs applied by default (the user's
+    # [sensors.<driver>.<metric>] tables overlay these), e.g. the
+    # BME280's CPU-heat temperature compensation.
+    default_transforms: Dict[str, Dict[str, object]] = {}
 
     @abstractmethod
     def available(self) -> bool:
@@ -106,6 +110,9 @@ class Readings:
     pm25: Optional[float] = None  # µg/m³
     pm10: Optional[float] = None  # µg/m³
     noise: Optional[float] = None  # dB relative to full scale (uncalibrated)
+    dew_point: Optional[float] = None  # °C (derived)
+    absolute_humidity: Optional[float] = None  # g/m³ (derived)
+    aqi: Optional[float] = None  # European AQI band 1-6 (derived)
 
 
 def flatten(readings: Dict[str, Reading]) -> Readings:

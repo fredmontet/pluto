@@ -34,12 +34,14 @@ class DeviceConfig:
 
 @dataclass
 class DriverConfig:
-    """One ``[sensors.<driver>]`` table: an enabled flag plus whatever
-    driver-specific settings the table carries. Settings are validated
-    by the driver itself when it is instantiated."""
+    """One ``[sensors.<driver>]`` table: an enabled flag, scalar
+    driver-specific settings (validated by the driver itself when it
+    is instantiated), and per-metric ``[sensors.<driver>.<metric>]``
+    transform tables (validated when the transform pipeline is built)."""
 
     enabled: bool = True
     settings: Dict[str, Any] = field(default_factory=dict)
+    transforms: Dict[str, Dict[str, Any]] = field(default_factory=dict)
 
 
 @dataclass
@@ -79,6 +81,15 @@ class OutputsConfig:
 
 
 @dataclass
+class DerivedConfig:
+    """Which derived metrics the transform pipeline computes."""
+
+    dew_point: bool = False
+    absolute_humidity: bool = False
+    aqi: bool = False  # European Air Quality Index from PM2.5/PM10
+
+
+@dataclass
 class BufferConfig:
     """Store-and-forward queue for network sinks (mqtt, http)."""
 
@@ -92,6 +103,7 @@ class Config:
     device: DeviceConfig = field(default_factory=DeviceConfig)
     sensors: SensorsConfig = field(default_factory=SensorsConfig)
     outputs: OutputsConfig = field(default_factory=OutputsConfig)
+    derived: DerivedConfig = field(default_factory=DerivedConfig)
     buffer: BufferConfig = field(default_factory=BufferConfig)
 
 
@@ -117,7 +129,8 @@ def load_config(path: Optional[str] = None) -> Config:
 
 def parse_config(data: Dict[str, Any]) -> Config:
     """Validate a parsed TOML document and build a Config from it."""
-    _check_keys(data, ("device", "sensors", "outputs", "buffer"), "top level")
+    _check_keys(data, ("device", "sensors", "outputs", "derived", "buffer"),
+                "top level")
     cfg = Config()
 
     device = _table(data, "device")
@@ -131,7 +144,9 @@ def parse_config(data: Dict[str, Any]) -> Config:
         _get(sensors, "refresh", float, cfg.sensors.refresh, "sensors"), "sensors.refresh")
     # Every other key is a [sensors.<driver>] table. Driver names and
     # their settings are validated when the drivers are loaded, so
-    # entry-point drivers unknown to this module still work.
+    # entry-point drivers unknown to this module still work. Nested
+    # [sensors.<driver>.<metric>] tables are per-metric transforms,
+    # validated when the transform pipeline is built.
     for name, table in sensors.items():
         if name == "refresh":
             continue
@@ -140,8 +155,17 @@ def parse_config(data: Dict[str, Any]) -> Config:
                 f"[sensors.{name}] must be a table of driver settings, "
                 f"got {type(table).__name__}")
         enabled = _get(table, "enabled", bool, True, f"sensors.{name}")
-        settings = {k: v for k, v in table.items() if k != "enabled"}
-        cfg.sensors.drivers[name] = DriverConfig(enabled=enabled, settings=settings)
+        settings = {}
+        transforms = {}
+        for k, v in table.items():
+            if k == "enabled":
+                continue
+            if isinstance(v, dict):
+                transforms[k] = v
+            else:
+                settings[k] = v
+        cfg.sensors.drivers[name] = DriverConfig(
+            enabled=enabled, settings=settings, transforms=transforms)
 
     outputs = _table(data, "outputs")
 
@@ -167,6 +191,14 @@ def parse_config(data: Dict[str, Any]) -> Config:
         enabled = _get(table, "enabled", bool, True, f"outputs.{name}")
         settings = {k: v for k, v in table.items() if k != "enabled"}
         cfg.outputs.sinks[name] = SinkConfig(enabled=enabled, settings=settings)
+
+    derived = _table(data, "derived")
+    _check_keys(derived, ("dew_point", "absolute_humidity", "aqi"), "[derived]")
+    d = cfg.derived
+    d.dew_point = _get(derived, "dew_point", bool, d.dew_point, "derived")
+    d.absolute_humidity = _get(
+        derived, "absolute_humidity", bool, d.absolute_humidity, "derived")
+    d.aqi = _get(derived, "aqi", bool, d.aqi, "derived")
 
     buffer = _table(data, "buffer")
     _check_keys(buffer, ("enabled", "path", "max_snapshots"), "[buffer]")

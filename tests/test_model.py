@@ -9,6 +9,7 @@ from pluto.drivers import read_all
 from pluto.drivers.base import Quality, Reading
 from pluto.drivers.mock import MockDriver
 from pluto.model import (
+    DERIVED_METRICS,
     METRICS,
     MIN_PLAUSIBLE_YEAR,
     VERSION,
@@ -91,7 +92,7 @@ def test_read_all_stamps_driver_names():
 
 def test_builtin_driver_units_match_catalogue():
     readings = MockDriver().read()
-    assert set(readings) == set(METRICS)
+    assert set(readings) == set(METRICS) - set(DERIVED_METRICS)
     for name, reading in readings.items():
         assert reading.unit == METRICS[name].unit, name
 

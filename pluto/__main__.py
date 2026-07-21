@@ -12,6 +12,7 @@ from .config import ConfigError
 from .display import Renderer
 from .drivers import load_drivers, provided_fields
 from .sinks import SinkContext, load_sinks
+from .transforms import build_pipeline
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -70,7 +71,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         cfg = config_module.load_config(args.config)
         cfg = config_module.apply_cli_overrides(cfg, args)
         drivers = load_drivers(cfg.sensors, mock=args.mock)
-        fields = provided_fields(drivers)
+        pipeline = build_pipeline(drivers, cfg.sensors, cfg.derived)
+        fields = provided_fields(drivers) | pipeline.derived_fields
         sinks = load_sinks(cfg.outputs, SinkContext(device=cfg.device, fields=fields),
                            cfg.buffer)
     except ConfigError as e:
@@ -109,9 +111,11 @@ def main(argv: Optional[List[str]] = None) -> int:
     renderer = Renderer(
         has_particulates="pm25" in fields,
         has_noise="noise" in fields,
+        derived=sorted(pipeline.derived_fields),
     )
     app = App(drivers, display, renderer, refresh=cfg.sensors.refresh,
-              cycle=cfg.outputs.display.cycle, sinks=sinks, device=cfg.device)
+              cycle=cfg.outputs.display.cycle, sinks=sinks, device=cfg.device,
+              pipeline=pipeline)
 
     if args.once:
         app.render_all_pages()

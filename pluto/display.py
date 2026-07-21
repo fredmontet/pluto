@@ -31,6 +31,9 @@ COLORS = {
     "nh3": (170, 110, 255),
     "pm": (180, 180, 180),
     "noise": (0, 220, 220),
+    "dew": (120, 190, 255),
+    "ah": (90, 220, 180),
+    "aqi": (255, 200, 90),
 }
 
 
@@ -55,7 +58,10 @@ def _fmt(value: Optional[float], spec: str = "{:.1f}", unit: str = "") -> str:
 class Renderer:
     """Builds one PIL frame per page from the latest readings."""
 
-    def __init__(self, has_particulates: bool = True, has_noise: bool = True):
+    def __init__(self, has_particulates: bool = True, has_noise: bool = True,
+                 derived=()):
+        """derived: names of enabled derived metrics (dew_point,
+        absolute_humidity, aqi); any of them adds an "Air" page."""
         self.font_small = _load_font(11)
         self.font_title = _load_font(12)
         self.font_value = _load_font(16)
@@ -70,6 +76,9 @@ class Renderer:
             self.pages.append(("Particles", self._page_particles))
         if has_noise:
             self.pages.append(("Noise", self._page_noise))
+        self._derived = set(derived)
+        if self._derived:
+            self.pages.append(("Air", self._page_air))
         self._has_particulates = has_particulates
         self._has_noise = has_noise
 
@@ -157,6 +166,16 @@ class Renderer:
                 ("PM10", _fmt(r.pm10, "{:.0f}", " ug/m3"), COLORS["pm"]),
             ],
         )
+
+    def _page_air(self, draw: ImageDraw.ImageDraw, r: Readings) -> None:
+        rows = []
+        if "dew_point" in self._derived:
+            rows.append(("Dew pt", _fmt(r.dew_point, "{:.1f}", " °C"), COLORS["dew"]))
+        if "absolute_humidity" in self._derived:
+            rows.append(("Abs hum", _fmt(r.absolute_humidity, "{:.1f}", " g/m3"), COLORS["ah"]))
+        if "aqi" in self._derived:
+            rows.append(("EAQI", _fmt(r.aqi, "{:.0f}", " / 6"), COLORS["aqi"]))
+        self._rows(draw, rows)
 
     def _page_noise(self, draw: ImageDraw.ImageDraw, r: Readings) -> None:
         draw.text((4, 20), "Level", font=self.font_small, fill=DIM)

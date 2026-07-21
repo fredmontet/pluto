@@ -82,7 +82,22 @@ METRICS: Dict[str, Metric] = {
     "noise": Metric(
         "Noise", "dB", "Noise level relative to full scale (uncalibrated dBFS)",
         "sound_pressure", "pluto_noise_decibels"),
+    # Derived metrics, computed by the transform pipeline when enabled
+    # in [derived] (see docs/metrics.md for the formulas).
+    "dew_point": Metric(
+        "Dew point", "°C", "Dew point temperature (Magnus formula)",
+        "temperature", "pluto_dew_point_celsius"),
+    "absolute_humidity": Metric(
+        "Absolute humidity", "g/m³", "Absolute humidity",
+        None, "pluto_absolute_humidity_grams_per_m3"),
+    "aqi": Metric(
+        "Air quality index", "",
+        "European Air Quality Index band (1 good .. 6 extremely poor)",
+        "aqi", "pluto_european_aqi"),
 }
+
+# Metrics produced by the transform pipeline rather than by a driver.
+DERIVED_METRICS = ("dew_point", "absolute_humidity", "aqi")
 
 # The particulate metrics share one Prometheus gauge with a size label.
 PM_SIZES = {"pm1": "1.0", "pm25": "2.5", "pm10": "10"}

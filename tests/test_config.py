@@ -66,7 +66,11 @@ def test_full_file(tmp_path):
         interval = 10.0
 
         [sensors.bme280]
-        comp_factor = 3.0
+        enabled = true
+
+        [sensors.bme280.temperature]
+        cpu_temp_compensation = 3.0
+        offset = -0.5
 
         [outputs.display]
         enabled = false
@@ -100,7 +104,9 @@ def test_full_file(tmp_path):
     assert not cfg.sensors.drivers["microphone"].enabled
     assert cfg.sensors.drivers["microphone"].settings == {"interval": 10.0}
     assert cfg.sensors.drivers["bme280"].enabled
-    assert cfg.sensors.drivers["bme280"].settings == {"comp_factor": 3.0}
+    assert cfg.sensors.drivers["bme280"].settings == {}
+    assert cfg.sensors.drivers["bme280"].transforms == {
+        "temperature": {"cpu_temp_compensation": 3.0, "offset": -0.5}}
     assert not cfg.outputs.display.enabled
     assert cfg.outputs.display.cycle == 0.0
     m = cfg.outputs.sinks["mqtt"]
@@ -252,12 +258,14 @@ def test_example_config_is_valid_and_matches_defaults():
     assert cfg.sensors.refresh == 1.0
     # The declared driver tables must spell out exactly the defaults.
     assert cfg.sensors.drivers == {
-        "bme280": config.DriverConfig(True, {"comp_factor": 2.25}),
+        "bme280": config.DriverConfig(
+            True, {}, {"temperature": {"cpu_temp_compensation": 2.25}}),
         "ltr559": config.DriverConfig(True, {}),
         "mics6814": config.DriverConfig(True, {}),
         "pms5003": config.DriverConfig(True, {}),
         "microphone": config.DriverConfig(True, {"interval": 5.0}),
     }
+    assert cfg.derived == config.DerivedConfig()  # all derived metrics off
     # Every sink appears, disabled, with its default settings.
     assert cfg.outputs.sinks == {
         "mqtt": config.SinkConfig(False, {

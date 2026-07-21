@@ -130,6 +130,28 @@ responds and drops out gracefully when it doesn't — and each
 it settings. The mock driver is the exception: it only loads with
 `--mock` or when a `[sensors.mock]` table declares it.
 
+### Calibration and derived metrics
+
+Any metric can be calibrated per device with a
+`[sensors.<driver>.<metric>]` table: `scale` (applied first), `offset`
+(then added) and `smooth` (moving average over the last N samples).
+The BME280 temperature's CPU-heat correction is the same mechanism —
+a `cpu_temp_compensation` transform, on by default with factor 2.25
+(`0` disables it; `raw_temperature` stays untouched):
+
+```toml
+[sensors.bme280.temperature]
+cpu_temp_compensation = 2.25
+offset = -0.5    # this unit reads half a degree warm
+smooth = 5
+```
+
+The `[derived]` section enables metrics computed from the calibrated
+values — `dew_point` (°C), `absolute_humidity` (g/m³) and `aqi` (the
+European Air Quality Index band from PM2.5/PM10). They get their own
+LCD page and reach every sink like native metrics; formulas and bands
+are documented in [docs/metrics.md](docs/metrics.md).
+
 Third-party packages can add drivers without touching pluto: subclass
 `pluto.drivers.base.Driver`, implement `available()` and `read()`
 (returning a `Reading` per field), and register the class under the
